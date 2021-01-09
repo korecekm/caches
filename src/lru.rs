@@ -15,7 +15,7 @@ struct LRUCache<
 }
 
 impl<K: Clone + Eq + Hash, V> LRUCache<K, V> {
-    pub(crate) fn new(capacity: usize) -> Self {
+    fn new(capacity: usize) -> Self {
         Self {
             capacity,
             map: HashMap::with_capacity(capacity),
@@ -76,6 +76,7 @@ mod test {
         lru.insert(1, 'A');
         assert_eq!(lru.try_get(&2), None);
         lru.insert(2, 'B');
+        assert_eq!(lru.try_get(&2), Some(&'B'));
         assert_eq!(lru.try_get(&2), Some(&'B'));
         assert_eq!(lru.try_get(&1), Some(&'A'));
         assert_eq!(lru.try_get(&3), None);
