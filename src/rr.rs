@@ -8,7 +8,7 @@ use rand::rngs::ThreadRng;
 // random replacement cache
 struct RRCache<K: Clone + Eq + Hash, V> {
     capacity: usize,
-    map: HashMap<K, NonNull<V>>,
+    map: HashMap<K, V>,
     vec: Vec<K>,
     rng: ThreadRng,
 }
@@ -27,7 +27,7 @@ impl<K: Clone + Eq + Hash, V> RRCache<K, V> {
 impl<K: Clone + Eq + Hash, V> Cache<K, V> for RRCache<K, V> {
     fn try_get<'a>(&'a mut self, key: &K) -> Option<&'a V> {
         self.map.get(key).map(|value| {
-            unsafe { value.as_ref() }
+            value
         })
     }
 
@@ -40,7 +40,7 @@ impl<K: Clone + Eq + Hash, V> Cache<K, V> for RRCache<K, V> {
             self.map.remove(&self.vec[rm]);
             self.vec[rm] = key.clone();
         }
-        self.map.insert(key, NonNull::new(Box::into_raw(Box::new(value))).unwrap());
+        self.map.insert(key, value);
     }
 }
 
