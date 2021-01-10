@@ -70,6 +70,18 @@ impl<V> DLList<V> {
     }
 }
 
+impl <V> Drop for DLList<V> {
+    fn drop(&mut self) {
+        let mut current = self.head;
+        while let Some(mut node) = current {
+            unsafe {
+                current = node.as_mut().next;
+                Box::from_raw(node.as_ptr());
+            }
+        }
+    }
+}
+
 // Test:
 
 #[cfg(test)]
