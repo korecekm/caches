@@ -1,8 +1,8 @@
 use crate::cache::Cache;
+use rand::rngs::ThreadRng;
+use rand::{thread_rng, Rng};
 use std::collections::HashMap;
 use std::hash::Hash;
-use rand::{Rng, thread_rng};
-use rand::rngs::ThreadRng;
 
 // random replacement cache
 struct RRCache<K: Clone + Eq + Hash, V> {
@@ -18,16 +18,14 @@ impl<K: Clone + Eq + Hash, V> RRCache<K, V> {
             capacity,
             map: HashMap::with_capacity(capacity),
             vec: Vec::with_capacity(capacity),
-            rng: thread_rng()
+            rng: thread_rng(),
         }
     }
 }
 
 impl<K: Clone + Eq + Hash, V> Cache<K, V> for RRCache<K, V> {
     fn try_get<'a>(&'a mut self, key: &K) -> Option<&'a V> {
-        self.map.get(key).map(|value| {
-            value
-        })
+        self.map.get(key).map(|value| value)
     }
 
     /// Expects that key isn't already present!
@@ -47,8 +45,8 @@ impl<K: Clone + Eq + Hash, V> Cache<K, V> for RRCache<K, V> {
 
 #[cfg(test)]
 mod test {
-    use crate::cache::Cache;
     use super::RRCache;
+    use crate::cache::Cache;
 
     #[test]
     fn simple() {
@@ -73,7 +71,7 @@ mod test {
             let c = ('A' as u8 + i) as char;
             let expect = match present[i as usize] {
                 false => None,
-                true  => Some(&c)
+                true => Some(&c),
             };
             assert_eq!(rr.try_get(&i), expect);
         }

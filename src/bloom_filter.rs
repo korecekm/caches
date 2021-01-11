@@ -1,6 +1,6 @@
+use ahash::AHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
-use ahash::AHasher;
 
 /// A seeded hash hashing into values 0..vec_size
 macro_rules! hash {
@@ -55,7 +55,6 @@ impl Bloom {
     }
 }
 
-
 struct CountingBloom {
     hasher_count: usize,
     vec: Vec<u8>,
@@ -74,7 +73,7 @@ impl CountingBloom {
     pub(crate) fn inc(&mut self, idx: usize) {
         self.vec[idx] += 1
     }
-    
+
     pub(crate) fn dec(&mut self, idx: usize) {
         self.vec[idx] -= 1
     }
@@ -116,7 +115,7 @@ mod test {
     fn random() {
         let mut rng = thread_rng();
         let mut bloom = Bloom::new(10, 4);
-        
+
         let range = 100;
         let mut included = vec![false; range];
         let mut false_pos_count = 0;
@@ -129,10 +128,12 @@ mod test {
                 included[v] = true;
             } else {
                 match included[v] {
-                    false => if bloom.may_contain(&v) {
-                        false_pos_count += 1;
+                    false => {
+                        if bloom.may_contain(&v) {
+                            false_pos_count += 1;
+                        }
                     }
-                    true => assert!(bloom.may_contain(&v))
+                    true => assert!(bloom.may_contain(&v)),
                 }
             }
         }
@@ -164,10 +165,12 @@ mod test {
                 }
             } else {
                 match included[v] {
-                    false => if bloom.may_contain(&v) {
-                        false_pos_count += 1;
+                    false => {
+                        if bloom.may_contain(&v) {
+                            false_pos_count += 1;
+                        }
                     }
-                    true => assert!(bloom.may_contain(&v))
+                    true => assert!(bloom.may_contain(&v)),
                 }
             }
         }

@@ -70,7 +70,7 @@ impl<V> DLList<V> {
     }
 }
 
-impl <V> Drop for DLList<V> {
+impl<V> Drop for DLList<V> {
     fn drop(&mut self) {
         let mut current = self.head;
         while let Some(mut node) = current {
@@ -103,7 +103,7 @@ mod test {
         }
         let mut total_inserted = 10;
         for _ in 0..1000 {
-            let mut choice = 0;  // if > 1, we try popping from the queue, otherwise we push_front
+            let mut choice = 0; // if > 1, we try popping from the queue, otherwise we push_front
             if list.size > 0 {
                 choice = rng.gen_range(0, 5);
             }

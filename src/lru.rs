@@ -1,14 +1,11 @@
 use crate::cache::Cache;
-use crate::list::{DLNode, DLList};
+use crate::list::{DLList, DLNode};
 use std::collections::HashMap;
-use std::ptr::NonNull;
 use std::hash::Hash;
 use std::mem;
+use std::ptr::NonNull;
 
-struct LRUCache<
-        K: Clone + Eq + Hash,
-        V,
-    > {
+struct LRUCache<K: Clone + Eq + Hash, V> {
     capacity: usize,
     map: HashMap<K, NonNull<DLNode<(K, V)>>>,
     list: DLList<(K, V)>,
@@ -43,7 +40,7 @@ impl<K: Clone + Eq + Hash, V> Cache<K, V> for LRUCache<K, V> {
                 }
                 list.insert_head(Box::into_raw(node));
             }
-            
+
             &node.as_ref().elem.1
         })
     }
@@ -55,9 +52,12 @@ impl<K: Clone + Eq + Hash, V> Cache<K, V> for LRUCache<K, V> {
                 self.map.remove(&k);
             }
         }
-        let mut node = NonNull::new(Box::into_raw(Box::new(DLNode::new((key.clone(), value))))).unwrap();
+        let mut node =
+            NonNull::new(Box::into_raw(Box::new(DLNode::new((key.clone(), value))))).unwrap();
         self.map.insert(key, node);
-        unsafe { self.list.insert_head(node.as_mut() as *mut DLNode<_>); }
+        unsafe {
+            self.list.insert_head(node.as_mut() as *mut DLNode<_>);
+        }
         self.list.size += 1;
     }
 }
@@ -66,8 +66,8 @@ impl<K: Clone + Eq + Hash, V> Cache<K, V> for LRUCache<K, V> {
 
 #[cfg(test)]
 mod test {
-    use crate::cache::Cache;
     use super::LRUCache;
+    use crate::cache::Cache;
 
     #[test]
     fn simple() {
@@ -86,7 +86,7 @@ mod test {
 
         assert_eq!(lru.try_get(&2), None);
         assert_eq!(lru.list.size, 3);
-        for i in [ (1, 'A'), (3, 'C'), (4, 'D') ].iter() {
+        for i in [(1, 'A'), (3, 'C'), (4, 'D')].iter() {
             assert_eq!(lru.list.pop_back(), Some(*i));
         }
         assert_eq!(lru.list.size, 0);
