@@ -1,7 +1,6 @@
 use crate::cache::Cache;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::ptr::NonNull;
 use rand::{Rng, thread_rng};
 use rand::rngs::ThreadRng;
 
