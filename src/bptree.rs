@@ -87,12 +87,10 @@ impl<V> BPTree<V> {
                     BPTNode::Leaf(ref leaf) => {
                         for i in 0..(leaf.key_count as usize) {
                             if *key == leaf.keys[i] {
-                                unsafe {
-                                    return leaf.ptrs[i].as_ref()
-                                }
+                                unsafe { return leaf.ptrs[i].as_ref() }
                             }
                         }
-                        return None
+                        return None;
                     }
                 }
             }
@@ -197,8 +195,11 @@ impl<V> BPTree<V> {
         if !self.root.is_null() {
             unsafe {
                 let (_, count) = (*self.root).check_bptree_properties(None, None, true);
-                assert_eq!(expected_record_count, count,
-                    "Tree was expected to hold {} elements. Actually detected {}.", expected_record_count, count);
+                assert_eq!(
+                    expected_record_count, count,
+                    "Tree was expected to hold {} elements. Actually detected {}.",
+                    expected_record_count, count
+                );
             }
         }
     }
@@ -264,7 +265,7 @@ impl<V> BPTNode<V> {
                             ptrs: [ptr::null::<BPTNode<V>>() as *mut _; B_PARAMETER],
                         };
                         let mut all_keys = [0; B_PARAMETER];
-                        let mut all_ptrs = [ptr::null::<BPTNode<V>>() as *mut _ ; B_PARAMETER + 1];
+                        let mut all_ptrs = [ptr::null::<BPTNode<V>>() as *mut _; B_PARAMETER + 1];
                         // all_ptrs[0] = branch.ptrs[0]; // actually not needed
                         for j in 0..idx {
                             all_keys[j] = branch.keys[j];
@@ -287,12 +288,15 @@ impl<V> BPTNode<V> {
                             right_branch.ptrs[j - (B_PARAMETER / 2)] = all_ptrs[j + 1];
                         }
 
-                        Some((all_keys[B_PARAMETER / 2], Box::into_raw(Box::new(BPTNode::Branch(right_branch)))))
+                        Some((
+                            all_keys[B_PARAMETER / 2],
+                            Box::into_raw(Box::new(BPTNode::Branch(right_branch))),
+                        ))
                     }
                     None => None,
                 }
             }
-            BPTNode::Leaf(leaf) => Self::update_in_leaf(leaf, key, val)
+            BPTNode::Leaf(leaf) => Self::update_in_leaf(leaf, key, val),
         }
     }
 
@@ -351,17 +355,34 @@ impl<V> BPTNode<V> {
             right_leaf.ptrs[j] = all_ptrs[j + B_PARAMETER / 2 + 1];
         }
 
-        Some((all_keys[B_PARAMETER / 2], Box::into_raw(Box::new(BPTNode::Leaf(right_leaf)))))
+        Some((
+            all_keys[B_PARAMETER / 2],
+            Box::into_raw(Box::new(BPTNode::Leaf(right_leaf))),
+        ))
     }
 
-    fn remove(&mut self, key: &u32, left_neighbor: *mut Self, right_neighbor: *mut Self) -> BPTRemoveResponse {
+    fn remove(
+        &mut self,
+        key: &u32,
+        left_neighbor: *mut Self,
+        right_neighbor: *mut Self,
+    ) -> BPTRemoveResponse {
         match self {
-            BPTNode::Branch(ref mut branch) => Self::remove_from_branch(branch, key, left_neighbor, right_neighbor),
-            BPTNode::Leaf(ref mut leaf) => Self::remove_from_leaf(leaf, key, left_neighbor, right_neighbor),
+            BPTNode::Branch(ref mut branch) => {
+                Self::remove_from_branch(branch, key, left_neighbor, right_neighbor)
+            }
+            BPTNode::Leaf(ref mut leaf) => {
+                Self::remove_from_leaf(leaf, key, left_neighbor, right_neighbor)
+            }
         }
     }
 
-    fn remove_from_branch(branch: &mut BPTBranch<V>, key: &u32, left: *mut Self, right: *mut Self) -> BPTRemoveResponse {
+    fn remove_from_branch(
+        branch: &mut BPTBranch<V>,
+        key: &u32,
+        left: *mut Self,
+        right: *mut Self,
+    ) -> BPTRemoveResponse {
         let mut idx = 0;
         while idx < branch.key_count as usize && branch.keys[idx] < *key {
             idx += 1;
@@ -402,7 +423,7 @@ impl<V> BPTNode<V> {
                 }
             }
         }
-        
+
         // Branch lost a key, if underflow happened, deal with it:
         // The node is now transformed so that it acts as a branch with key_count - 1 keys
 
@@ -418,23 +439,32 @@ impl<V> BPTNode<V> {
             if let BPTNode::Branch(ref mut neighbor) = unsafe { &mut *left } {
                 Some(neighbor)
             } else {
-                panic!("Invalid remove case: leaf node was provided as a neighbor of a branch node.");
+                panic!(
+                    "Invalid remove case: leaf node was provided as a neighbor of a branch node."
+                );
             }
-        } else { None };
+        } else {
+            None
+        };
         let mut r = if !right.is_null() {
             if let BPTNode::Branch(ref mut neighbor) = unsafe { &mut *right } {
                 Some(neighbor)
             } else {
-                panic!("Invalid remove case: leaf node was provided as a neighbor of a branch node.");
+                panic!(
+                    "Invalid remove case: leaf node was provided as a neighbor of a branch node."
+                );
             }
-        } else { None };
+        } else {
+            None
+        };
 
         // try rotating from right neighbor
         if let Some(ref mut neighbor) = r {
             if neighbor.key_count >= min_keys {
                 let take_ptr = neighbor.ptrs[0];
                 let rotate_key = neighbor.keys[0];
-                let new_key = unsafe { (*branch.ptrs[branch.key_count as usize - 1]).rightmost_key() };
+                let new_key =
+                    unsafe { (*branch.ptrs[branch.key_count as usize - 1]).rightmost_key() };
                 branch.keys[branch.key_count as usize - 1] = new_key;
                 branch.ptrs[branch.key_count as usize] = take_ptr;
                 neighbor.ptrs[0] = neighbor.ptrs[1];
@@ -499,11 +529,16 @@ impl<V> BPTNode<V> {
             }
             return BPTRemoveResponse::MergeLeft;
         }
-        
+
         panic!("Invalid remove case: remove was called on a branch with no neighbors given.");
     }
 
-    fn remove_from_leaf(leaf: &mut BPTLeaf<V>, key: &u32, left: *mut Self, right: *mut Self) -> BPTRemoveResponse {
+    fn remove_from_leaf(
+        leaf: &mut BPTLeaf<V>,
+        key: &u32,
+        left: *mut Self,
+        right: *mut Self,
+    ) -> BPTRemoveResponse {
         let mut idx = 0;
         while idx < leaf.key_count as usize && leaf.keys[idx] < *key {
             idx += 1;
@@ -513,7 +548,7 @@ impl<V> BPTNode<V> {
         if idx == leaf.key_count as usize || leaf.keys[idx] != *key {
             return BPTRemoveResponse::NoChange;
         }
-        
+
         let min_keys = ((B_PARAMETER / 2) + (B_PARAMETER % 2)) as u8;
         // underflow doesn't occur
         if leaf.key_count > min_keys {
@@ -531,16 +566,24 @@ impl<V> BPTNode<V> {
             if let BPTNode::Leaf(ref mut neighbor) = unsafe { &mut *left } {
                 Some(neighbor)
             } else {
-                panic!("Invalid remove case: branch node was provided as a neighbor of a leaf node.");
+                panic!(
+                    "Invalid remove case: branch node was provided as a neighbor of a leaf node."
+                );
             }
-        } else { None };
+        } else {
+            None
+        };
         let mut r = if !right.is_null() {
             if let BPTNode::Leaf(ref mut neighbor) = unsafe { &mut *right } {
                 Some(neighbor)
             } else {
-                panic!("Invalid remove case: branch node was provided as a neighbor of a leaf node.");
+                panic!(
+                    "Invalid remove case: branch node was provided as a neighbor of a leaf node."
+                );
             }
-        } else { None };
+        } else {
+            None
+        };
 
         // try rotating from right neighbor
         if let Some(ref mut neighbor) = r {
@@ -621,7 +664,9 @@ impl<V> BPTNode<V> {
     /// Utility function for remove to determine a new separator
     fn rightmost_key(&self) -> u32 {
         match self {
-            BPTNode::Branch(ref branch) => unsafe { (*branch.ptrs[branch.key_count as usize]).rightmost_key() },
+            BPTNode::Branch(ref branch) => unsafe {
+                (*branch.ptrs[branch.key_count as usize]).rightmost_key()
+            },
             BPTNode::Leaf(ref leaf) => leaf.keys[leaf.key_count as usize - 1],
         }
     }
@@ -647,7 +692,12 @@ impl<V> BPTNode<V> {
     // Checks B+ invariants;
     // Returns the depth and number of elements of the subtree rooted in this node
     #[cfg(test)]
-    fn check_bptree_properties(&self, least_lim: Option<u32>, most_lim: Option<u32>, root: bool) -> (usize, usize) {
+    fn check_bptree_properties(
+        &self,
+        least_lim: Option<u32>,
+        most_lim: Option<u32>,
+        root: bool,
+    ) -> (usize, usize) {
         let mut least_lim = least_lim;
         match self {
             BPTNode::Branch(branch) => {
@@ -658,20 +708,46 @@ impl<V> BPTNode<V> {
                 }
                 assert!(branch.key_count < B_PARAMETER as u8);
                 let mut count = 0;
-                let (d, cnt) = unsafe { (*branch.ptrs[0]).check_bptree_properties(least_lim, Some(branch.keys[0]), false) };
+                let (d, cnt) = unsafe {
+                    (*branch.ptrs[0]).check_bptree_properties(
+                        least_lim,
+                        Some(branch.keys[0]),
+                        false,
+                    )
+                };
                 count += cnt;
                 for i in 0..(branch.key_count as usize) {
                     if let Some(lim) = least_lim {
-                        assert!(lim < branch.keys[i], "Branch key idx {} expected to be over {}, but was {}.", i, lim, branch.keys[i]);
+                        assert!(
+                            lim < branch.keys[i],
+                            "Branch key idx {} expected to be over {}, but was {}.",
+                            i,
+                            lim,
+                            branch.keys[i]
+                        );
                     }
                     if let Some(lim) = most_lim {
-                        assert!(lim >= branch.keys[i], "Branch key idx {} expected to be at most {}, but was {}.", i, lim, branch.keys[i]);
+                        assert!(
+                            lim >= branch.keys[i],
+                            "Branch key idx {} expected to be at most {}, but was {}.",
+                            i,
+                            lim,
+                            branch.keys[i]
+                        );
                     }
                     least_lim = Some(branch.keys[i]);
                     let mlim_subtree = if i + 1 < (branch.key_count as usize) {
                         Some(branch.keys[i + 1])
-                    } else { most_lim };
-                    let (d_now, cnt_now) = unsafe { (*branch.ptrs[i + 1]).check_bptree_properties(least_lim, mlim_subtree, false) };
+                    } else {
+                        most_lim
+                    };
+                    let (d_now, cnt_now) = unsafe {
+                        (*branch.ptrs[i + 1]).check_bptree_properties(
+                            least_lim,
+                            mlim_subtree,
+                            false,
+                        )
+                    };
                     assert_eq!(d, d_now, "Nonequal depths of branch subtrees.");
                     count += cnt_now;
                 }
@@ -680,16 +756,32 @@ impl<V> BPTNode<V> {
             BPTNode::Leaf(leaf) => {
                 if !root {
                     let min_keys = (B_PARAMETER / 2) + (B_PARAMETER % 2);
-                    assert!(leaf.key_count >= min_keys as u8,
-                        "Non-root leaves are expected to hold at least {} keys, found one with {}.", min_keys, leaf.key_count);
+                    assert!(
+                        leaf.key_count >= min_keys as u8,
+                        "Non-root leaves are expected to hold at least {} keys, found one with {}.",
+                        min_keys,
+                        leaf.key_count
+                    );
                 }
                 assert!(leaf.key_count <= B_PARAMETER as u8);
                 for i in 0..(leaf.key_count as usize) {
                     if let Some(lim) = least_lim {
-                        assert!(lim < leaf.keys[i], "Leaf key idx {} expected to be over {}, but was {}.", i, lim, leaf.keys[i]);
+                        assert!(
+                            lim < leaf.keys[i],
+                            "Leaf key idx {} expected to be over {}, but was {}.",
+                            i,
+                            lim,
+                            leaf.keys[i]
+                        );
                     }
                     if let Some(lim) = most_lim {
-                        assert!(lim >= leaf.keys[i], "Leaf key idx {} expected to be at most {}, but was {}.", i, lim, leaf.keys[i]);
+                        assert!(
+                            lim >= leaf.keys[i],
+                            "Leaf key idx {} expected to be at most {}, but was {}.",
+                            i,
+                            lim,
+                            leaf.keys[i]
+                        );
                     }
                     assert!(!leaf.ptrs[i].is_null());
 
@@ -725,7 +817,7 @@ mod test {
         map.update(1000, 1000);
         map.check_bptree_properties(3);
         assert_eq!(65, *map.search(&65).unwrap());
-        
+
         for i in 5..120 {
             map.update(i, i * 4);
         }
@@ -756,15 +848,28 @@ mod test {
             for i in 0..1000 {
                 let record = map.search(&(i as u32));
                 match member[i] {
-                    0 => assert_eq!(record, None,
-                        "Unexpected record for key {}, key hasn't been inserted. Record is {:?}", i, record.unwrap()),
-                    e => {
-                        match record {
-                            None => panic!("Key {} has been inserted, but no record for it was received.", i),
-                            Some(rec) => assert_eq!(*rec, (i as u32, e),
-                                "Unexpected record. Expected ({}, {}), received ({}, {})", i, e, rec.0, rec.1),
-                        }
-                    }
+                    0 => assert_eq!(
+                        record,
+                        None,
+                        "Unexpected record for key {}, key hasn't been inserted. Record is {:?}",
+                        i,
+                        record.unwrap()
+                    ),
+                    e => match record {
+                        None => panic!(
+                            "Key {} has been inserted, but no record for it was received.",
+                            i
+                        ),
+                        Some(rec) => assert_eq!(
+                            *rec,
+                            (i as u32, e),
+                            "Unexpected record. Expected ({}, {}), received ({}, {})",
+                            i,
+                            e,
+                            rec.0,
+                            rec.1
+                        ),
+                    },
                 }
             }
         }
@@ -845,15 +950,28 @@ mod test {
             for j in 0..1000 {
                 let record = map.search(&(j as u32));
                 match member[j] {
-                    0 => assert_eq!(record, None,
-                        "Unexpected record for key {}, key shouldn't be stored. Record is {:?}", j, record.unwrap()),
-                    e => {
-                        match record {
-                            None => panic!("Key {} should be stored, but no record for it was received.", j),
-                            Some(rec) => assert_eq!(*rec, (j as u32, e),
-                                "Unexpected record. Expected ({}, {}), received ({}, {})", j, e, rec.0, rec.1),
-                        }
-                    }
+                    0 => assert_eq!(
+                        record,
+                        None,
+                        "Unexpected record for key {}, key shouldn't be stored. Record is {:?}",
+                        j,
+                        record.unwrap()
+                    ),
+                    e => match record {
+                        None => panic!(
+                            "Key {} should be stored, but no record for it was received.",
+                            j
+                        ),
+                        Some(rec) => assert_eq!(
+                            *rec,
+                            (j as u32, e),
+                            "Unexpected record. Expected ({}, {}), received ({}, {})",
+                            j,
+                            e,
+                            rec.0,
+                            rec.1
+                        ),
+                    },
                 }
             }
         }
