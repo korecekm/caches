@@ -1,4 +1,3 @@
-use crate::cache::Cache;
 use rand::rngs::ThreadRng;
 use rand::{thread_rng, Rng};
 use std::collections::HashMap;
@@ -21,9 +20,7 @@ impl<K: Clone + Eq + Hash, V> RRCache<K, V> {
             rng: thread_rng(),
         }
     }
-}
 
-impl<K: Clone + Eq + Hash, V> Cache<K, V> for RRCache<K, V> {
     fn try_get<'a>(&'a mut self, key: &K) -> Option<&'a V> {
         self.map.get(key).map(|value| value)
     }

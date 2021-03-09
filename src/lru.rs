@@ -1,4 +1,3 @@
-use crate::cache::Cache;
 use crate::list::{DLList, DLNode};
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -19,9 +18,7 @@ impl<K: Clone + Eq + Hash, V> LRUCache<K, V> {
             list: DLList::new(),
         }
     }
-}
 
-impl<K: Clone + Eq + Hash, V> Cache<K, V> for LRUCache<K, V> {
     fn try_get<'a>(&'a mut self, key: &K) -> Option<&'a V> {
         let list = &mut self.list;
         self.map.get_mut(key).map(|node| unsafe {
