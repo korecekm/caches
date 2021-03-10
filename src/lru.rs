@@ -64,7 +64,6 @@ impl<K: Clone + Eq + Hash, V> LRUCache<K, V> {
 #[cfg(test)]
 mod test {
     use super::LRUCache;
-    use crate::cache::Cache;
 
     #[test]
     fn simple() {

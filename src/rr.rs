@@ -43,7 +43,6 @@ impl<K: Clone + Eq + Hash, V> RRCache<K, V> {
 #[cfg(test)]
 mod test {
     use super::RRCache;
-    use crate::cache::Cache;
 
     #[test]
     fn simple() {

@@ -179,6 +179,11 @@ impl<V> BPTree<V> {
                         return;
                     }
 
+                    // free memory used for the value:
+                    unsafe {
+                        Box::from_raw(leaf.ptrs[idx]);
+                    }
+
                     // simply fill the formed gap
                     for j in (idx + 1)..(leaf.key_count as usize) {
                         leaf.keys[j - 1] = leaf.keys[j];
@@ -547,6 +552,11 @@ impl<V> BPTNode<V> {
         // there's no record for given key
         if idx == leaf.key_count as usize || leaf.keys[idx] != *key {
             return BPTRemoveResponse::NoChange;
+        }
+
+        // free memory used for the value
+        unsafe {
+            Box::from_raw(leaf.ptrs[idx]);
         }
 
         let min_keys = ((B_PARAMETER / 2) + (B_PARAMETER % 2)) as u8;
