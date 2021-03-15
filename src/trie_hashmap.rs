@@ -1,8 +1,8 @@
-use std::sync::{Arc, Mutex, MutexGuard};
 use ahash::AHasher;
-use std::hash::Hasher;
 use std::hash::Hash;
+use std::hash::Hasher;
 use std::mem;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 macro_rules! hash {
     ($k:expr) => {{
@@ -12,24 +12,26 @@ macro_rules! hash {
     }};
 }
 
-const DEPTH: usize = 5;          // how many nodes until we reach Vec
-const BIT_COUNT: usize = 3;      // the number of bits that are significant for each node
-const MASK: u32 = 0x7;         // BIT_COUNT ones to use as a mask
-const CHILD_COUNT: usize = 8;    // 2^BIT_COUNT (= the number of Refs in each node)
+const DEPTH: usize = 5; // how many nodes until we reach Vec
+const BIT_COUNT: usize = 3; // the number of bits that are significant for each node
+const MASK: u32 = 0x7; // BIT_COUNT ones to use as a mask
+const CHILD_COUNT: usize = 8; // 2^BIT_COUNT (= the number of Refs in each node)
 
 // TODO optimize alignment
 #[derive(Clone)]
 struct Branch<K, V>
-where K: Eq + Hash + Clone,
-V: Clone
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
 {
     txid: u32,
     refs: [Ref<K, V>; CHILD_COUNT],
 }
 #[derive(Clone)]
 struct Leaf<K, V>
-where K: Eq + Hash + Clone,
-V: Clone
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
 {
     txid: u32,
     refs: [Elem<K, V>; CHILD_COUNT],
@@ -37,8 +39,9 @@ V: Clone
 
 #[derive(Clone)]
 enum Node<K, V>
-    where K: Eq + Hash + Clone,
-          V: Clone
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
 {
     Branch(Branch<K, V>),
     Leaf(Leaf<K, V>),
@@ -49,23 +52,26 @@ type Ref<K, V> = Option<Arc<Node<K, V>>>;
 type Elem<K, V> = Option<Arc<(u32, Vec<(K, V)>)>>;
 
 pub struct TrieMap<K, V>
-    where K: Eq + Hash + Clone,
-          V: Clone
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
 {
     root: Mutex<Ref<K, V>>,
     write: Mutex<()>,
 }
 
 pub struct TMReadTxn<K, V>
-    where K: Eq + Hash + Clone,
-          V: Clone
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
 {
     root: Ref<K, V>,
 }
 
 pub struct TMWriteTxn<'a, K, V>
-    where K: Eq + Hash + Clone,
-          V: Clone
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
 {
     txid: u32,
     caller: &'a TrieMap<K, V>,
@@ -75,8 +81,9 @@ pub struct TMWriteTxn<'a, K, V>
 
 // IMPLEMENTATION:
 impl<K, V> TrieMap<K, V>
-    where K: Eq + Hash + Clone,
-          V: Clone
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
 {
     pub fn new() -> Self {
         Self {
@@ -90,7 +97,7 @@ impl<K, V> TrieMap<K, V>
             root: match &*self.root.lock().unwrap() {
                 None => None,
                 Some(arc) => Some(Arc::clone(arc)),
-            }
+            },
         }
     }
 
@@ -114,7 +121,7 @@ impl<K, V> TrieMap<K, V>
             Some(arc) => match &**arc {
                 Node::Leaf(ref leaf) => leaf.txid + 1,
                 Node::Branch(ref branch) => branch.txid + 1,
-            }
+            },
         };
         TMWriteTxn {
             txid,
@@ -129,8 +136,9 @@ impl<K, V> TrieMap<K, V>
 }
 
 impl<K, V> TMReadTxn<K, V>
-    where K: Eq + Hash + Clone,
-          V: Clone
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
 {
     pub fn search(&self, key: &K) -> Option<&V> {
         let vec = Node::find_vec(&self.root, hash!(key));
@@ -142,8 +150,9 @@ impl<K, V> TMReadTxn<K, V>
 }
 
 impl<'a, K, V> TMWriteTxn<'a, K, V>
-    where K: Eq + Hash + Clone,
-          V: Clone
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
 {
     pub fn search(&self, key: &K) -> Option<&V> {
         let vec = Node::find_vec(&self.root, hash!(key));
@@ -162,7 +171,7 @@ impl<'a, K, V> TMWriteTxn<'a, K, V>
         Node::update(&mut mut_arc, key, val, hash, 0);
         self.root = Some(mut_arc);
 
-/*
+        /*
         self.root = Some(match &self.root {
             None => {
                 let mut new_arc = Arc::new(Node::empty_branch(self.txid));
@@ -189,36 +198,37 @@ impl<'a, K, V> TMWriteTxn<'a, K, V>
             }
         }
     }
-/*
-    pub fn remove(&mut self, key: &K) {
-        let hash = hash!(key);
-        let vec = Node::find_vec(&self.root, hash);
-        if let Some(vec) = &vec {
-            if Node::search_in_vec(vec, key).is_none() {
-                return;
-            }
-            if vec.len() < 2 {
-                let update_arc = mem::take(&mut self.root).unwrap();
-                self.root = Node::remove_path(update_arc, self.txid, hash, 0);
-                if self.root.is_none() {
-                    self.txid = 0;
+    /*
+        pub fn remove(&mut self, key: &K) {
+            let hash = hash!(key);
+            let vec = Node::find_vec(&self.root, hash);
+            if let Some(vec) = &vec {
+                if Node::search_in_vec(vec, key).is_none() {
+                    return;
                 }
-            } else {
-                let mut update_arc = Node::modify_node(mem::take(&mut self.root).unwrap(), self.txid);
-                Node::clone_and_remove(&mut update_arc, key, hash, 0);
-                self.root = Some(update_arc);
+                if vec.len() < 2 {
+                    let update_arc = mem::take(&mut self.root).unwrap();
+                    self.root = Node::remove_path(update_arc, self.txid, hash, 0);
+                    if self.root.is_none() {
+                        self.txid = 0;
+                    }
+                } else {
+                    let mut update_arc = Node::modify_node(mem::take(&mut self.root).unwrap(), self.txid);
+                    Node::clone_and_remove(&mut update_arc, key, hash, 0);
+                    self.root = Some(update_arc);
+                }
             }
         }
-    }
-*/
+    */
     pub fn commit(self) {
         *self.caller.root.lock().unwrap() = self.root;
     }
 }
 
 impl<K, V> Node<K, V>
-    where K: Eq + Hash + Clone,
-          V: Clone
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
 {
     fn empty_branch(txid: u32) -> Self {
         Self::Branch(Branch {
@@ -238,7 +248,7 @@ impl<K, V> Node<K, V>
     /// Otherwise, the whole Node gets cloned with the given txid and a reference
     /// to this clone is returned
     fn modify_node(node: Arc<Self>, txid: u32) -> Arc<Self> {
-        let node_txid = match  &*node {
+        let node_txid = match &*node {
             Node::Branch(ref branch) => branch.txid,
             Node::Leaf(ref leaf) => leaf.txid,
         };
@@ -248,7 +258,7 @@ impl<K, V> Node<K, V>
             let mut clone = (*node).clone();
             match &mut clone {
                 Node::Branch(ref mut branch) => branch.txid = txid,
-                Node::Leaf(ref mut leaf ) => leaf.txid = txid,
+                Node::Leaf(ref mut leaf) => leaf.txid = txid,
             }
             Arc::new(clone)
         }
@@ -267,15 +277,16 @@ impl<K, V> Node<K, V>
                         node = &branch.refs[idx];
                     }
                     Self::Leaf(ref leaf) => {
-                        debug_assert!(depth == DEPTH - 1, "Invalid state: leaf node found at non-maximum depth.");
+                        debug_assert!(
+                            depth == DEPTH - 1,
+                            "Invalid state: leaf node found at non-maximum depth."
+                        );
                         match &leaf.refs[idx] {
                             None => return None,
-                            Some(arc_vec) => {
-                                return Some(&(**arc_vec).1)
-                            }
+                            Some(arc_vec) => return Some(&(**arc_vec).1),
                         }
                     }
-                }
+                },
             }
             depth += 1;
         }
@@ -295,7 +306,10 @@ impl<K, V> Node<K, V>
         let idx = ((hash >> (depth * BIT_COUNT)) & MASK) as usize;
         match Arc::get_mut(node).unwrap() {
             Node::Branch(ref mut branch) => {
-                debug_assert!(depth < DEPTH - 1, "Invalid state: update ran into a branch node at leaf depth.");
+                debug_assert!(
+                    depth < DEPTH - 1,
+                    "Invalid state: update ran into a branch node at leaf depth."
+                );
                 match branch.refs[idx] {
                     None => {
                         let mut new_ref = Arc::new(if depth == DEPTH - 2 {
@@ -307,14 +321,20 @@ impl<K, V> Node<K, V>
                         branch.refs[idx] = Some(new_ref)
                     }
                     Some(_) => {
-                        let mut arc = Node::modify_node(mem::take(&mut branch.refs[idx]).unwrap(), branch.txid);
+                        let mut arc = Node::modify_node(
+                            mem::take(&mut branch.refs[idx]).unwrap(),
+                            branch.txid,
+                        );
                         Self::update(&mut arc, key, val, hash, depth + 1);
                         branch.refs[idx] = Some(arc);
                     }
                 }
             }
             Node::Leaf(ref mut leaf) => {
-                debug_assert!(depth == DEPTH - 1, "Invalid state: update ran into a leaf node in low depth.");
+                debug_assert!(
+                    depth == DEPTH - 1,
+                    "Invalid state: update ran into a leaf node in low depth."
+                );
                 match leaf.refs[idx] {
                     None => leaf.refs[idx] = Some(Arc::new((leaf.txid, vec![(key, val)]))),
                     Some(ref mut arc) => {
@@ -323,7 +343,11 @@ impl<K, V> Node<K, V>
                             Self::update_in_vec(&mut Arc::get_mut(arc).unwrap().1, key, val);
                         } else {
                             let mut new_ref = Arc::new((leaf.txid, old_vec.clone()));
-                            Self::update_in_vec(&mut (*Arc::get_mut(&mut new_ref).unwrap()).1, key, val);
+                            Self::update_in_vec(
+                                &mut (*Arc::get_mut(&mut new_ref).unwrap()).1,
+                                key,
+                                val,
+                            );
                             leaf.refs[idx] = Some(new_ref);
                         }
                     }
@@ -353,40 +377,57 @@ impl<K, V> Node<K, V>
         let idx = ((hash >> (depth * BIT_COUNT)) & MASK) as usize;
         match &*node {
             Node::Branch(ref branch) => {
-                debug_assert!(depth < DEPTH - 1, "Invalid state: remove ran into a branch node at leaf depth.");
+                debug_assert!(
+                    depth < DEPTH - 1,
+                    "Invalid state: remove ran into a branch node at leaf depth."
+                );
                 let intermediate = if branch.txid == txid {
                     let mut_node = Arc::get_mut(&mut node).unwrap();
                     if let Node::Branch(ref mut branch) = mut_node {
-                        let modify = Self::modify_node(mem::take(&mut branch.refs[idx]).unwrap(), txid);
+                        let modify =
+                            Self::modify_node(mem::take(&mut branch.refs[idx]).unwrap(), txid);
                         branch.refs[idx] = Self::remove_path(modify, txid, hash, depth + 1);
                         node
-                    } else { panic!("Unreachable."); }
+                    } else {
+                        panic!("Unreachable.");
+                    }
                 } else {
                     let mut clone = Self::modify_node(node, txid);
                     if let Node::Branch(ref mut branch) = Arc::get_mut(&mut clone).unwrap() {
                         let modify = mem::take(&mut branch.refs[idx]).unwrap();
                         branch.refs[idx] = Self::remove_path(modify, txid, hash, depth + 1);
                         clone
-                    } else { panic!("Unreachable."); }
+                    } else {
+                        panic!("Unreachable.");
+                    }
                 };
                 if let Node::Branch(ref branch) = &*intermediate {
                     if branch.refs[idx].is_none() {
                         let mut none_count = 0;
                         for elem in &branch.refs {
-                            if elem.is_none() { none_count += 1; }
+                            if elem.is_none() {
+                                none_count += 1;
+                            }
                         }
                         if none_count == 0 {
                             return None;
                         }
                     }
                     Some(intermediate)
-                } else { panic!("Unreachable."); }
+                } else {
+                    panic!("Unreachable.");
+                }
             }
             Node::Leaf(ref leaf) => {
-                debug_assert!(depth == DEPTH - 1, "Invalid state: remove ran into a leaf node in low depth.");
+                debug_assert!(
+                    depth == DEPTH - 1,
+                    "Invalid state: remove ran into a leaf node in low depth."
+                );
                 let mut none_count = 0;
                 for elem in &leaf.refs {
-                    if elem.is_none() { none_count += 1; }
+                    if elem.is_none() {
+                        none_count += 1;
+                    }
                 }
                 if none_count < 2 {
                     None
@@ -395,13 +436,17 @@ impl<K, V> Node<K, V>
                         let mut_node = Arc::get_mut(&mut node).unwrap();
                         if let Node::Leaf(ref mut mut_leaf) = mut_node {
                             mut_leaf.refs[idx] = None;
-                        } else { panic!("Unreachable."); }
+                        } else {
+                            panic!("Unreachable.");
+                        }
                         Some(node)
                     } else {
                         let mut clone = Self::modify_node(node, txid);
                         if let Node::Leaf(ref mut clone_leaf) = Arc::get_mut(&mut clone).unwrap() {
                             clone_leaf.refs[idx] = None;
-                        } else { panic!("Unreachable."); }
+                        } else {
+                            panic!("Unreachable.");
+                        }
                         Some(clone)
                     }
                 }
@@ -412,8 +457,11 @@ impl<K, V> Node<K, V>
     fn remove(mut node: Arc<Node<K, V>>, key: &K, hash: u32, txid: u32, depth: usize) -> Ref<K, V> {
         let idx = ((hash >> (depth * BIT_COUNT)) & MASK) as usize;
         match &*node {
-            Node::Branch(ref branch) =>  {
-                debug_assert!(depth < DEPTH - 1, "Invalid state: remove ran into a branch node at leaf depth.");
+            Node::Branch(ref branch) => {
+                debug_assert!(
+                    depth < DEPTH - 1,
+                    "Invalid state: remove ran into a branch node at leaf depth."
+                );
                 // We want to call Self::remove on the corresponding child, and if that becomes None, while being
                 // the last Some value among the children, None shall be returned (as this node would otherwise
                 // just be a dead end).
@@ -426,21 +474,27 @@ impl<K, V> Node<K, V>
                         let modify = mem::take(&mut branch.refs[idx]).unwrap();
                         branch.refs[idx] = Self::remove(modify, key, hash, txid, depth + 1);
                         node
-                    } else { panic!("Unreachable."); }
+                    } else {
+                        panic!("Unreachable.");
+                    }
                 } else {
                     let mut clone = Self::modify_node(node, txid);
                     if let Node::Branch(ref mut branch) = Arc::get_mut(&mut clone).unwrap() {
                         let modify = mem::take(&mut branch.refs[idx]).unwrap();
                         branch.refs[idx] = Self::remove(modify, key, hash, txid, depth + 1);
                         clone
-                    } else { panic!("Unreachable."); }
+                    } else {
+                        panic!("Unreachable.");
+                    }
                 };
                 // Here we check, if by chance the last Some value has been removed:
                 if let Node::Branch(ref branch) = &*intermediate {
                     if branch.refs[idx].is_none() {
                         let mut some_count = 0;
                         for elem in &branch.refs {
-                            if elem.is_some() { some_count += 1; }
+                            if elem.is_some() {
+                                some_count += 1;
+                            }
                         }
                         if some_count == 0 {
                             return None;
@@ -448,15 +502,22 @@ impl<K, V> Node<K, V>
                     }
                     // otherwise, we just return the intermediate as is (nonempty recordes are still stored)
                     Some(intermediate)
-                } else { panic!("Unreachable."); }
+                } else {
+                    panic!("Unreachable.");
+                }
             }
             Node::Leaf(ref leaf) => {
-                debug_assert!(depth == DEPTH - 1, "Invalid state: remove ran into a leaf node in low depth.");
+                debug_assert!(
+                    depth == DEPTH - 1,
+                    "Invalid state: remove ran into a leaf node in low depth."
+                );
                 // First, see if there's just one value in the corresponding value vector
                 if leaf.refs[idx].as_ref().unwrap().1.len() < 2 {
                     let mut some_count = 0;
                     for elem in &leaf.refs {
-                        if elem.is_some() { some_count += 1; }
+                        if elem.is_some() {
+                            some_count += 1;
+                        }
                     }
                     // In a leaf node, we don't have to recurse to the child and may check if there's a single
                     // stored value first.
@@ -469,7 +530,9 @@ impl<K, V> Node<K, V>
                     let mut_node = Arc::get_mut(&mut mut_arc).unwrap();
                     if let Node::Leaf(ref mut mut_leaf) = mut_node {
                         mut_leaf.refs[idx] = None;
-                    } else { panic!("Unreachable."); }
+                    } else {
+                        panic!("Unreachable.");
+                    }
                     return Some(mut_arc);
                 }
 
@@ -480,7 +543,9 @@ impl<K, V> Node<K, V>
                     let vec_txid = &(*mut_leaf.refs[idx].as_ref().unwrap()).0;
                     if *vec_txid == txid {
                         // we may legally mutate this vector
-                        let vec = &mut Arc::get_mut(mut_leaf.refs[idx].as_mut().unwrap()).unwrap().1;
+                        let vec = &mut Arc::get_mut(mut_leaf.refs[idx].as_mut().unwrap())
+                            .unwrap()
+                            .1;
                         // see where the key is stored:
                         let mut key_idx = 0;
                         while vec[key_idx].0 != *key {
@@ -500,24 +565,32 @@ impl<K, V> Node<K, V>
                         }
                         mut_leaf.refs[idx] = Some(new_ref);
                     }
-                } else { panic!("Unreachable."); }
+                } else {
+                    panic!("Unreachable.");
+                }
                 Some(mut_arc)
             }
         }
     }
 
-
     fn clone_and_remove(node: &mut Arc<Node<K, V>>, key: &K, hash: u32, depth: usize) {
         let idx = ((hash >> (depth * BIT_COUNT)) & MASK) as usize;
         match Arc::get_mut(node).unwrap() {
             Node::Branch(ref mut branch) => {
-                debug_assert!(depth < DEPTH - 1, "Invalid state: remove ran into a branch node at leaf depth.");
-                let mut arc = Node::modify_node(mem::take(&mut branch.refs[idx]).unwrap(), branch.txid);
+                debug_assert!(
+                    depth < DEPTH - 1,
+                    "Invalid state: remove ran into a branch node at leaf depth."
+                );
+                let mut arc =
+                    Node::modify_node(mem::take(&mut branch.refs[idx]).unwrap(), branch.txid);
                 Self::clone_and_remove(&mut arc, key, hash, depth + 1);
                 branch.refs[idx] = Some(arc);
             }
             Node::Leaf(ref mut leaf) => {
-                debug_assert!(depth == DEPTH - 1, "Invalid state: remove ran into a leaf node in low depth.");
+                debug_assert!(
+                    depth == DEPTH - 1,
+                    "Invalid state: remove ran into a leaf node in low depth."
+                );
                 let txid = &(*leaf.refs[idx].as_ref().unwrap()).0;
                 if *txid == leaf.txid {
                     let vec = &mut Arc::get_mut(leaf.refs[idx].as_mut().unwrap()).unwrap().1;
@@ -529,7 +602,9 @@ impl<K, V> Node<K, V>
                     let mut i = 0;
                     while i < old_vec.len() {
                         if i != idx {
-                            (*Arc::get_mut(&mut new_ref).unwrap()).1.push(old_vec[i].clone());
+                            (*Arc::get_mut(&mut new_ref).unwrap())
+                                .1
+                                .push(old_vec[i].clone());
                         }
                         i += 1;
                     }
@@ -539,7 +614,6 @@ impl<K, V> Node<K, V>
         }
     }
 }
-
 
 #[cfg(test)]
 mod test {
@@ -554,16 +628,22 @@ mod test {
         write.update(2, 2);
         write.update(1000, 1000);
         let mut read = map.read();
-        assert!(read.search(&65).is_none(), "Key was written into map without committing write transaction.");
+        assert!(
+            read.search(&65).is_none(),
+            "Key was written into map without committing write transaction."
+        );
         write.commit();
-        
+
         write = map.write();
         for i in 5..120 {
             write.update(i, i * 2);
         }
 
         read = map.read();
-        assert!(read.search(&5).is_none(), "Key was written into map without committing write transaction.");
+        assert!(
+            read.search(&5).is_none(),
+            "Key was written into map without committing write transaction."
+        );
         assert_eq!(read.search(&65), Some(&65));
 
         assert_eq!(write.search(&2), Some(&2));
@@ -610,9 +690,14 @@ mod test {
     macro_rules! check_one {
         ($expect:expr, $actual:expr, $key:expr) => {
             match $expect {
-                0 => if let Some(rec) = $actual {
-                    panic!("No record expected for key {}, received ({}, {}).", $key, rec.0, rec.1);
-                },
+                0 => {
+                    if let Some(rec) = $actual {
+                        panic!(
+                            "No record expected for key {}, received ({}, {}).",
+                            $key, rec.0, rec.1
+                        );
+                    }
+                }
                 e => match $actual {
                     None => panic!("Key {} should be stored, but no record found", $key),
                     Some(rec) => assert_eq!(
@@ -623,7 +708,7 @@ mod test {
                         e,
                         rec.0,
                         rec.1
-                    )
+                    ),
                 },
             }
         };
