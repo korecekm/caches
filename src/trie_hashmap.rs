@@ -170,20 +170,6 @@ where
         };
         Node::update(&mut mut_arc, key, val, hash, 0);
         self.root = Some(mut_arc);
-
-        /*
-        self.root = Some(match &self.root {
-            None => {
-                let mut new_arc = Arc::new(Node::empty_branch(self.txid));
-                Node::update(&mut new_arc, key, val, hash, 0);
-                new_arc
-            }
-            Some(_) => {
-                let mut update_arc = Node::modify_node(mem::take(&mut self.root).unwrap(), self.txid);
-                Node::update(&mut update_arc, key, val, hash, 0);
-                update_arc
-            }
-        });*/
     }
 
     pub fn remove(&mut self, key: &K) {
@@ -198,28 +184,7 @@ where
             }
         }
     }
-    /*
-        pub fn remove(&mut self, key: &K) {
-            let hash = hash!(key);
-            let vec = Node::find_vec(&self.root, hash);
-            if let Some(vec) = &vec {
-                if Node::search_in_vec(vec, key).is_none() {
-                    return;
-                }
-                if vec.len() < 2 {
-                    let update_arc = mem::take(&mut self.root).unwrap();
-                    self.root = Node::remove_path(update_arc, self.txid, hash, 0);
-                    if self.root.is_none() {
-                        self.txid = 0;
-                    }
-                } else {
-                    let mut update_arc = Node::modify_node(mem::take(&mut self.root).unwrap(), self.txid);
-                    Node::clone_and_remove(&mut update_arc, key, hash, 0);
-                    self.root = Some(update_arc);
-                }
-            }
-        }
-    */
+
     pub fn commit(self) {
         *self.caller.root.lock().unwrap() = self.root;
     }
@@ -366,94 +331,6 @@ where
         vec.push((key, val));
     }
 
-    // when removing by key, we first see whether the containing Vec has just
-    // one element, if yes, we call remove_path, which simply removes the
-    // references and (if all refs are turned to None) Nodes on the path to
-    // given hash;
-    // if the Vec is longer, we call clone_and_remove, which simply clones the
-    // path according to given txid and removec the key from the Vec
-    // !! the Arc received by remove_path doesn't necessarily have required txid
-    fn remove_path(mut node: Arc<Node<K, V>>, txid: u32, hash: u32, depth: usize) -> Ref<K, V> {
-        let idx = ((hash >> (depth * BIT_COUNT)) & MASK) as usize;
-        match &*node {
-            Node::Branch(ref branch) => {
-                debug_assert!(
-                    depth < DEPTH - 1,
-                    "Invalid state: remove ran into a branch node at leaf depth."
-                );
-                let intermediate = if branch.txid == txid {
-                    let mut_node = Arc::get_mut(&mut node).unwrap();
-                    if let Node::Branch(ref mut branch) = mut_node {
-                        let modify =
-                            Self::modify_node(mem::take(&mut branch.refs[idx]).unwrap(), txid);
-                        branch.refs[idx] = Self::remove_path(modify, txid, hash, depth + 1);
-                        node
-                    } else {
-                        panic!("Unreachable.");
-                    }
-                } else {
-                    let mut clone = Self::modify_node(node, txid);
-                    if let Node::Branch(ref mut branch) = Arc::get_mut(&mut clone).unwrap() {
-                        let modify = mem::take(&mut branch.refs[idx]).unwrap();
-                        branch.refs[idx] = Self::remove_path(modify, txid, hash, depth + 1);
-                        clone
-                    } else {
-                        panic!("Unreachable.");
-                    }
-                };
-                if let Node::Branch(ref branch) = &*intermediate {
-                    if branch.refs[idx].is_none() {
-                        let mut none_count = 0;
-                        for elem in &branch.refs {
-                            if elem.is_none() {
-                                none_count += 1;
-                            }
-                        }
-                        if none_count == 0 {
-                            return None;
-                        }
-                    }
-                    Some(intermediate)
-                } else {
-                    panic!("Unreachable.");
-                }
-            }
-            Node::Leaf(ref leaf) => {
-                debug_assert!(
-                    depth == DEPTH - 1,
-                    "Invalid state: remove ran into a leaf node in low depth."
-                );
-                let mut none_count = 0;
-                for elem in &leaf.refs {
-                    if elem.is_none() {
-                        none_count += 1;
-                    }
-                }
-                if none_count < 2 {
-                    None
-                } else {
-                    if leaf.txid == txid {
-                        let mut_node = Arc::get_mut(&mut node).unwrap();
-                        if let Node::Leaf(ref mut mut_leaf) = mut_node {
-                            mut_leaf.refs[idx] = None;
-                        } else {
-                            panic!("Unreachable.");
-                        }
-                        Some(node)
-                    } else {
-                        let mut clone = Self::modify_node(node, txid);
-                        if let Node::Leaf(ref mut clone_leaf) = Arc::get_mut(&mut clone).unwrap() {
-                            clone_leaf.refs[idx] = None;
-                        } else {
-                            panic!("Unreachable.");
-                        }
-                        Some(clone)
-                    }
-                }
-            }
-        }
-    }
-
     fn remove(mut node: Arc<Node<K, V>>, key: &K, hash: u32, txid: u32, depth: usize) -> Ref<K, V> {
         let idx = ((hash >> (depth * BIT_COUNT)) & MASK) as usize;
         match &*node {
@@ -569,47 +446,6 @@ where
                     panic!("Unreachable.");
                 }
                 Some(mut_arc)
-            }
-        }
-    }
-
-    fn clone_and_remove(node: &mut Arc<Node<K, V>>, key: &K, hash: u32, depth: usize) {
-        let idx = ((hash >> (depth * BIT_COUNT)) & MASK) as usize;
-        match Arc::get_mut(node).unwrap() {
-            Node::Branch(ref mut branch) => {
-                debug_assert!(
-                    depth < DEPTH - 1,
-                    "Invalid state: remove ran into a branch node at leaf depth."
-                );
-                let mut arc =
-                    Node::modify_node(mem::take(&mut branch.refs[idx]).unwrap(), branch.txid);
-                Self::clone_and_remove(&mut arc, key, hash, depth + 1);
-                branch.refs[idx] = Some(arc);
-            }
-            Node::Leaf(ref mut leaf) => {
-                debug_assert!(
-                    depth == DEPTH - 1,
-                    "Invalid state: remove ran into a leaf node in low depth."
-                );
-                let txid = &(*leaf.refs[idx].as_ref().unwrap()).0;
-                if *txid == leaf.txid {
-                    let vec = &mut Arc::get_mut(leaf.refs[idx].as_mut().unwrap()).unwrap().1;
-                    vec[idx] = vec[vec.len() - 1].clone();
-                    vec.remove(vec.len() - 1);
-                } else {
-                    let old_vec = &(*leaf.refs[idx].as_ref().unwrap()).1;
-                    let mut new_ref = Arc::new((leaf.txid, Vec::with_capacity(old_vec.len() - 1)));
-                    let mut i = 0;
-                    while i < old_vec.len() {
-                        if i != idx {
-                            (*Arc::get_mut(&mut new_ref).unwrap())
-                                .1
-                                .push(old_vec[i].clone());
-                        }
-                        i += 1;
-                    }
-                    leaf.refs[idx] = Some(new_ref);
-                }
             }
         }
     }
