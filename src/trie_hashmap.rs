@@ -4,6 +4,46 @@ use std::hash::Hasher;
 use std::mem;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+// A concurrently readable, transactional key-value map.
+// # Sequential DS description:
+// Our trie works as an 8-ary postfix tree, where nodes at depth D have 8
+// children corresponding to the possible values of the D-th LEAST significant
+// bit triplet in a key's hash. Leaf node's children are vectors of key-value
+// pairs, where the actual records are held. These leaves are at a fixed depth
+// 5 (which also means that we aren't using the full extent of the hash).
+// The selected trie properties, ie number of significant hash bits for each
+// node and the tree depth, may be changed using the constants following the
+// hash macro definition (no other changes needed).
+// Note: this design lets us only hold 8 references in each node and nothing
+// more (except transaction id as we'll see) and seems to be a very accurate
+// tree-based extension of the classical hash table implementations.
+// # EXAMPLE: search for value with key K:
+// 1) Hash K using the hash macro (let H := hash!(K))
+// 2) let (current) node be the root node and current depth be 1
+//    - if root is None, return None, because there are no records at all
+// 3) ITERATE DEPTH TIMES: Apply a three-bit mask to the (3*depth)-th least
+//    significant bits of H to determine the order of the child to 'recurse' to
+//    -> the current node (or rather the found Vec if we're at final depth)
+//       will now be determined as the child at the found order in current node
+//       ( return None if this child is unset )
+// 4) We now hold a Vec of (key, value) pairs (in no particular order), simply
+//    search for the pair with key == K, if present.
+// # Transactional (and concurently readable) extension:
+// We take advantage of the ATOMIC reference counting. Each node now also holds
+// its transaction id (txid) and also the leaf-child vectors are stored in
+// pairs of the form (txid, Vec).
+// Every mutating function (ie update, remove in the WriteTxn) clones the whole
+// path it traverses, that doesn't hold this transaction's txid, making it hold
+// this txid. This way, only nodes newly created by this write transaction
+// (with current txid) are ever modified and the Nodes with 'older' transaction
+// IDs stay unmodified for any read transactions.
+//
+// # What we assume:
+// - a good hash function
+// - a fixed amount of stored values corresponding to the 8^5 maximum stored
+//   key-value pair vectors, so that collisions aren't too likely
+
+// Uses AHasher to get a u32 hash for given key
 macro_rules! hash {
     ($k:expr) => {{
         let mut hasher = AHasher::new_with_keys(3, 7);
@@ -164,10 +204,15 @@ where
 
     pub fn update(&mut self, key: K, val: V) {
         let hash = hash!(key);
+        // If root isn't yet stored, create a new one, otherwise clone or use
+        // the stored one, based on its txid
         let mut mut_arc = match &self.root {
             None => Arc::new(Node::empty_branch(self.txid)),
             Some(_) => Node::modify_node(mem::take(&mut self.root).unwrap(), self.txid),
         };
+        // Now update the inside the root that we know can be modified.
+        // Last parameter specifies the zero*3 shifts needed for our three-bit
+        // mask at current depth (= 1).
         Node::update(&mut mut_arc, key, val, hash, 0);
         self.root = Some(mut_arc);
     }
@@ -229,6 +274,8 @@ where
         }
     }
 
+    /// The part of a search that traverses the whole trie and gets to the
+    /// corresponding Vec (or hits a None)
     fn find_vec(root: &Ref<K, V>, hash: u32) -> Option<&Vec<(K, V)>> {
         let mut node = root;
         let mut depth = 0;
@@ -258,6 +305,8 @@ where
         panic!("Unreachable.");
     }
 
+    /// Searches through a (K, V)-pair Vec for a pair, where K == key.
+    /// If found, &V gets returned.
     fn search_in_vec<'a>(vec: &'a Vec<(K, V)>, key: &K) -> Option<&'a V> {
         for (k, v) in vec.iter() {
             if k == key {
@@ -268,6 +317,7 @@ where
     }
 
     fn update(node: &mut Arc<Node<K, V>>, key: K, val: V, hash: u32, depth: usize) {
+        // Given Arc always has the right txid and may therefore be modified.
         let idx = ((hash >> (depth * BIT_COUNT)) & MASK) as usize;
         match Arc::get_mut(node).unwrap() {
             Node::Branch(ref mut branch) => {
@@ -332,6 +382,9 @@ where
     }
 
     fn remove(mut node: Arc<Node<K, V>>, key: &K, hash: u32, txid: u32, depth: usize) -> Ref<K, V> {
+        // node is not given as a &mut Arc as in update, but as an actual consumed Arc, which doesn't
+        // necessarily hold current txid (that's so we don't preemptively clone a node just to make
+        // it None)
         let idx = ((hash >> (depth * BIT_COUNT)) & MASK) as usize;
         match &*node {
             Node::Branch(ref branch) => {
