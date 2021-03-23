@@ -1,4 +1,5 @@
 use crate::list::{DLList, DLNode};
+use std::sync::Mutex;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::mem;
@@ -7,7 +8,7 @@ use std::ptr::NonNull;
 struct LRUCache<K: Clone + Eq + Hash, V> {
     capacity: usize,
     map: HashMap<K, NonNull<DLNode<(K, V)>>>,
-    list: DLList<(K, V)>,
+    list: Mutex<DLList<(K, V)>>,
 }
 
 impl<K: Clone + Eq + Hash, V> LRUCache<K, V> {
@@ -15,12 +16,12 @@ impl<K: Clone + Eq + Hash, V> LRUCache<K, V> {
         Self {
             capacity,
             map: HashMap::with_capacity(capacity),
-            list: DLList::new(),
+            list: Mutex::new(DLList::new()),
         }
     }
 
     fn try_get<'a>(&'a mut self, key: &K) -> Option<&'a V> {
-        let list = &mut self.list;
+        let list = &mut *self.list.lock().unwrap();
         self.map.get_mut(key).map(|node| unsafe {
             let prev_node = mem::take(&mut (node.as_mut()).prev);
             if let Some(mut prev) = prev_node {
@@ -44,8 +45,9 @@ impl<K: Clone + Eq + Hash, V> LRUCache<K, V> {
 
     /// Expects that key isn't already present!
     fn insert(&mut self, key: K, value: V) {
-        if self.list.size == self.capacity {
-            if let Some((k, _)) = self.list.pop_back() {
+        let list = &mut *self.list.lock().unwrap();
+        if list.size == self.capacity {
+            if let Some((k, _)) = list.pop_back() {
                 self.map.remove(&k);
             }
         }
@@ -53,9 +55,9 @@ impl<K: Clone + Eq + Hash, V> LRUCache<K, V> {
             NonNull::new(Box::into_raw(Box::new(DLNode::new((key.clone(), value))))).unwrap();
         self.map.insert(key, node);
         unsafe {
-            self.list.insert_head(node.as_mut() as *mut DLNode<_>);
+            list.insert_head(node.as_mut() as *mut DLNode<_>);
         }
-        self.list.size += 1;
+        list.size += 1;
     }
 }
 
@@ -81,11 +83,11 @@ mod test {
         lru.insert(4, 'D');
 
         assert_eq!(lru.try_get(&2), None);
-        assert_eq!(lru.list.size, 3);
+        assert_eq!((*lru.list.lock().unwrap()).size, 3);
         for i in [(1, 'A'), (3, 'C'), (4, 'D')].iter() {
-            assert_eq!(lru.list.pop_back(), Some(*i));
+            assert_eq!((*lru.list.lock().unwrap()).pop_back(), Some(*i));
         }
-        assert_eq!(lru.list.size, 0);
-        assert_eq!(lru.list.pop_back(), None);
+        assert_eq!((*lru.list.lock().unwrap()).size, 0);
+        assert_eq!((*lru.list.lock().unwrap()).pop_back(), None);
     }
 }
