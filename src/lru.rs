@@ -5,14 +5,21 @@ use std::hash::Hash;
 use std::mem;
 use std::ptr::NonNull;
 
-struct LRUCache<K: Clone + Eq + Hash, V> {
+pub struct LRUCache<K: Clone + Eq + Hash, V> {
     capacity: usize,
     map: HashMap<K, NonNull<DLNode<(K, V)>>>,
     list: Mutex<DLList<(K, V)>>,
 }
 
+unsafe impl<K: Clone + Eq + Hash, V> Send for LRUCache<K, V>
+{
+}
+unsafe impl<K: Clone + Eq + Hash, V> Sync for LRUCache<K, V>
+{
+}
+
 impl<K: Clone + Eq + Hash, V> LRUCache<K, V> {
-    fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize) -> Self {
         Self {
             capacity,
             map: HashMap::with_capacity(capacity),
@@ -20,7 +27,7 @@ impl<K: Clone + Eq + Hash, V> LRUCache<K, V> {
         }
     }
 
-    fn try_get<'a>(&'a mut self, key: &K) -> Option<&'a V> {
+    pub fn try_get<'a>(&'a mut self, key: &K) -> Option<&'a V> {
         let list = &mut *self.list.lock().unwrap();
         self.map.get_mut(key).map(|node| unsafe {
             let prev_node = mem::take(&mut (node.as_mut()).prev);
@@ -44,7 +51,7 @@ impl<K: Clone + Eq + Hash, V> LRUCache<K, V> {
     }
 
     /// Expects that key isn't already present!
-    fn insert(&mut self, key: K, value: V) {
+    pub fn insert(&mut self, key: K, value: V) {
         let list = &mut *self.list.lock().unwrap();
         if list.size == self.capacity {
             if let Some((k, _)) = list.pop_back() {
