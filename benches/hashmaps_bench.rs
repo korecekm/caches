@@ -10,7 +10,9 @@ extern crate caches;
 extern crate concread;
 
 use caches::trie_hashmap::*;
+use caches::hash_map::HashMap as BPTHM;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, black_box};
+use concache::manual::Map as ConcacheMap;
 use rand::{thread_rng, Rng};
 use std::ptr;
 
@@ -53,6 +55,26 @@ pub fn concread_hashmap_bench(c: &mut Criterion) {
     });
 }
 
+pub fn bptree_hashmap_bench(c: &mut Criterion) {
+    c.bench_function("bptree_hashmap_bench", |b| {
+        b.iter_batched(
+            || prepare_benches(),
+            |queries| black_box(perform_bptree_bench(queries)),
+            BatchSize::SmallInput,
+        )
+    });
+}
+
+pub fn concache_hashmap_bench(c: &mut Criterion) {
+    c.bench_function("concache_hashmap_bench", |b| {
+        b.iter_batched(
+            || prepare_benches(),
+            |queries| black_box(perform_concache_bench(queries)),
+            BatchSize::SmallInput,
+        )
+    });
+}
+
 pub fn stdhashmap_bench(c: &mut Criterion) {
     c.bench_function("std_hashmap_bench", |b| {
         b.iter_batched(
@@ -63,7 +85,14 @@ pub fn stdhashmap_bench(c: &mut Criterion) {
     });
 }
 
-criterion_group!(hashmaps, triehashmap_bench, concread_hashmap_bench, stdhashmap_bench);
+criterion_group!(
+    hashmaps,
+    triehashmap_bench,
+    concread_hashmap_bench,
+    bptree_hashmap_bench,
+    concache_hashmap_bench,
+    stdhashmap_bench
+);
 criterion_main!(hashmaps);
 
 // All hashmaps shall work with the same queries (although std-hashmap doesn't perform commits).
@@ -139,6 +168,47 @@ fn perform_concread_bench(queries: &'static Vec<HashmapAction>) {
             }
             HashmapAction::Remove(k) => {
                 write_txn.remove(&k);
+            }
+        }
+    }
+}
+
+fn perform_bptree_bench(queries: &Vec<HashmapAction>) {
+    let map = BPTHM::new();
+    let mut write_txn = map.write();
+    for q in queries.iter() {
+        match q {
+            HashmapAction::Commit => {
+                write_txn.commit();
+                write_txn = map.write();
+            }
+            HashmapAction::Search(k) => {
+                write_txn.search(&k);
+            }
+            HashmapAction::Update(k) => {
+                write_txn.update(k, ());
+            }
+            HashmapAction::Remove(k) => {
+                write_txn.remove(&k);
+            }
+        }
+    }
+}
+
+fn perform_concache_bench(queries: &Vec<HashmapAction>) {
+    // so that the capacity is the same as that of the current trie_hashmap
+    let mut map_handle = ConcacheMap::with_capacity(32768);
+    for q in queries.iter() {
+        match q {
+            HashmapAction::Commit => {},
+            HashmapAction::Search(k) => {
+                map_handle.get(&k);
+            }
+            HashmapAction::Update(k) => {
+                map_handle.insert(k, ());
+            }
+            HashmapAction::Remove(k) => {
+                map_handle.remove(&k);
             }
         }
     }
