@@ -22,6 +22,26 @@ impl<V> DLNode<V> {
             elem,
         }
     }
+
+    /// Move this node to front of the queue (also needs a mutable reference
+    /// to the list (queue) itself)
+    pub fn move_to_front(&mut self, queue: &mut DLList<V>) {
+        let prev_node = mem::take(&mut self.prev);
+        if let Some(mut prev) = prev_node {
+            // Node actually isn't at the front yet
+            match mem::take(&mut self.next) {
+                None => unsafe {
+                    prev.as_mut().next = None;
+                    queue.tail = Some(prev);
+                }
+                Some(mut next) => unsafe {
+                    next.as_mut().prev = Some(prev);
+                    prev.as_mut().next = Some(next);
+                }
+            }
+            queue.insert_head(self as *mut _)
+        }
+    }
 }
 
 impl<V> DLList<V> {

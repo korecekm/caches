@@ -67,7 +67,7 @@ fn perform_miss_bench() {
         } else {
             // get
             unsafe {
-                if (*(*CACHE).lock().unwrap()).try_get(&key).is_none() {
+                if (*(*CACHE).lock().unwrap()).get(&key).is_none() {
                     *(*MISS_COUNT).lock().unwrap() += 1;
                 }
             }
