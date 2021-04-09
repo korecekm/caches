@@ -182,12 +182,8 @@ where
     _guard: MutexGuard<'a, ()>,
 }
 
-unsafe impl<K: Eq + Hash + Clone, V: Clone> Send for TrieMap<K, V>
-{
-}
-unsafe impl<K: Eq + Hash + Clone, V: Clone> Sync for TrieMap<K, V>
-{
-}
+unsafe impl<K: Eq + Hash + Clone, V: Clone> Send for TrieMap<K, V> {}
+unsafe impl<K: Eq + Hash + Clone, V: Clone> Sync for TrieMap<K, V> {}
 
 // IMPLEMENTATION:
 
@@ -318,7 +314,7 @@ where
     }
 
     /// Commit the changes done with this write transaction.
-    /// 
+    ///
     /// If you wish to roll the changes back, simpy have the TMWriteTxn handle
     /// dropped.
     pub fn commit(self) {
@@ -643,13 +639,13 @@ where
         Self {
             state: match root {
                 None => done_ptr,
-                Some(ref node) => {
-                    match &**node {
-                        Node::Branch(ref branch) => new_ptr!(IterState::BranchIter(0, branch, done_ptr)),
-                        Node::Leaf(ref leaf) => new_ptr!(IterState::LeafIter(0, leaf, done_ptr)),
+                Some(ref node) => match &**node {
+                    Node::Branch(ref branch) => {
+                        new_ptr!(IterState::BranchIter(0, branch, done_ptr))
                     }
-                }
-            }
+                    Node::Leaf(ref leaf) => new_ptr!(IterState::LeafIter(0, leaf, done_ptr)),
+                },
+            },
         }
     }
 
@@ -657,20 +653,29 @@ where
     fn next_key(&mut self) -> Option<&'a K> {
         match unsafe { &mut *self.state } {
             IterState::Done => None,
-            IterState::BranchIter(ref mut idx, branch, parent) => self.branch_next(branch, idx, *parent),
+            IterState::BranchIter(ref mut idx, branch, parent) => {
+                self.branch_next(branch, idx, *parent)
+            }
             IterState::LeafIter(ref mut idx, leaf, parent) => self.leaf_next(leaf, idx, *parent),
             IterState::ElemIter(ref mut idx, vec, parent) => self.elem_next(vec, idx, *parent),
         }
     }
 
-    fn branch_next(&mut self, branch: &'a Branch<K, V>, idx: &mut usize, parent: *mut IterState<'a, K, V>) -> Option<&'a K> {
+    fn branch_next(
+        &mut self,
+        branch: &'a Branch<K, V>,
+        idx: &mut usize,
+        parent: *mut IterState<'a, K, V>,
+    ) -> Option<&'a K> {
         // find the first index in line that isn't None
         while *idx < CHILD_COUNT {
             *idx += 1;
             // a Some child node was find, simulate recursion into it:
             if let Some(ref arc_node) = branch.refs[*idx - 1] {
                 self.state = match &**arc_node {
-                    Node::Branch(ref branch) => new_ptr!(IterState::BranchIter(0, branch, self.state)),
+                    Node::Branch(ref branch) => {
+                        new_ptr!(IterState::BranchIter(0, branch, self.state))
+                    }
                     Node::Leaf(ref leaf) => new_ptr!(IterState::LeafIter(0, leaf, self.state)),
                 };
                 return self.next_key();
@@ -687,16 +692,19 @@ where
         self.next_key()
     }
 
-    fn leaf_next(&mut self, leaf: &'a Leaf<K, V>, idx: &mut usize, parent: *mut IterState<'a, K, V>) -> Option<&'a K> {
+    fn leaf_next(
+        &mut self,
+        leaf: &'a Leaf<K, V>,
+        idx: &mut usize,
+        parent: *mut IterState<'a, K, V>,
+    ) -> Option<&'a K> {
         // find the first index in line that isn't None
         while *idx < CHILD_COUNT {
             *idx += 1;
             if let Some(ref arc_elem) = leaf.refs[*idx - 1] {
                 // a Some child vector was find, simulate recursion into it:
                 let (_, ref vec) = &**arc_elem;
-                self.state = new_ptr!(IterState::ElemIter(
-                    0, vec, self.state
-                ));
+                self.state = new_ptr!(IterState::ElemIter(0, vec, self.state));
                 return self.next_key();
             }
         }
@@ -711,7 +719,12 @@ where
         self.next_key()
     }
 
-    fn elem_next(&mut self, elems: &'a Vec<(K, V)>, idx: &mut usize, parent: *mut IterState<'a, K, V>) -> Option<&'a K> {
+    fn elem_next(
+        &mut self,
+        elems: &'a Vec<(K, V)>,
+        idx: &mut usize,
+        parent: *mut IterState<'a, K, V>,
+    ) -> Option<&'a K> {
         if *idx < elems.len() {
             // if any element hasn't yet been returned return it and increase the idx
             *idx += 1;
@@ -736,7 +749,7 @@ where
     V: Clone,
 {
     type Item = &'a K;
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         self.next_key()
     }
@@ -750,19 +763,16 @@ where
     fn drop(&mut self) {
         let mut current = self.state;
         loop {
-            let current_box = unsafe {
-                Box::from_raw(current)
-            };
+            let current_box = unsafe { Box::from_raw(current) };
             current = match &*current_box {
                 IterState::Done => return,
                 IterState::BranchIter(_, _, parent) => *parent,
                 IterState::LeafIter(_, _, parent) => *parent,
-                _ => panic!("Unreachable."),  // ElemIter never becomes a parent node
+                _ => panic!("Unreachable."), // ElemIter never becomes a parent node
             };
         }
     }
 }
-
 
 // TESTS:
 
@@ -982,10 +992,18 @@ mod test {
         let mut success_count = 0;
         let mut hit = vec![false; count];
         for key_ref in map.read().iter_keys() {
-            assert!(!hit[*key_ref as usize], "Key {} was retrieved more than once", *key_ref);
+            assert!(
+                !hit[*key_ref as usize],
+                "Key {} was retrieved more than once",
+                *key_ref
+            );
             hit[*key_ref as usize] = true;
             success_count += 1;
         }
-        assert_eq!(count, success_count, "Only {} keys were retrieved", success_count);
+        assert_eq!(
+            count, success_count,
+            "Only {} keys were retrieved",
+            success_count
+        );
     }
 }
