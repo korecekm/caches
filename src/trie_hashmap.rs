@@ -52,12 +52,18 @@ macro_rules! hash {
     }};
 }
 
+// (used by Iterator logic)
+macro_rules! new_ptr {
+    ($from:expr) => {{
+        Box::into_raw(Box::new($from))
+    }};
+}
+
 const DEPTH: usize = 5; // how many nodes until we reach Vec
 const BIT_COUNT: usize = 3; // the number of bits that are significant for each node
 const MASK: u32 = 0x7; // BIT_COUNT ones to use as a mask
 const CHILD_COUNT: usize = 8; // 2^BIT_COUNT (= the number of Refs in each node)
 
-// TODO optimize alignment
 #[derive(Clone)]
 struct Branch<K, V>
 where
@@ -91,6 +97,63 @@ type Ref<K, V> = Option<Arc<Node<K, V>>>;
 // elem also holds txid (the u32 in the tuple)
 type Elem<K, V> = Option<Arc<(u32, Vec<(K, V)>)>>;
 
+/// A concurrently readable, transactional key-value hash map.
+///
+/// TrieMap itself works only as an immutable handle. Modifications to the map
+/// need to be done via TMWriteTxn write transactions and are only recorded
+/// permanently once the transactions are commited (only one write transaction
+/// is allowed at a time).
+///
+/// TMReadTxn read transactions provide snapshots to the current state of the
+/// hash map, ie. they enable you to search through the records as they were at
+/// the point of the transaction's creation.
+///
+/// the read and write transactions may be generated via the `read()` and
+/// `write()` functions, respectively.
+///
+/// Currently, both the read and write txns provide two read-only operations:
+/// * search(&key): gives an (immutable) reference to the value corresponding to
+///   this key
+/// * `iter_keys()`: generates an iterator giving (immutable) references to all
+///   the recorded keys; this essentially works as a random iteration through
+///   the keys
+///
+/// The write transaction also provides these modifying operations:
+/// * `update(key, value)`: updates a value for given key, or inserts it into
+///   the map if it isn't recorded already
+/// * `remove(&key)`: removes given key's record inside the tree (or does
+///   nothing it isn't recorded)
+///
+/// ## Example:
+/// ```
+/// let map = TrieMap::new();
+///
+/// // create a TMWriteTxn handle to be able to modify the map
+/// let mut write = map.write();
+/// // only one write transaction can exist at a time
+/// assert!(map.try_write().is_none());
+///
+/// // insert two records, update one and remove the other
+/// write.update("first", 1);
+/// write.update("second", 2);
+/// write.update("second", 3);
+/// write.remove(&"first");
+///
+/// // the write txn hasn't been committed yet, so a new read txn doesn't see
+/// // the data
+/// assert!(map.read().search(&"second").is_none());
+///
+/// // commit the write transaction:
+/// // (it is also possible to roll it back simply by having the transaction
+/// // handle dropped)
+/// write.commit();
+/// // from now, a new write transaction may be created
+///
+/// // a new read transaction will now see the record made by the write txn:
+/// let read = map.read();
+/// assert_eq!(read.search(&"first"), None);
+/// assert_eq!(read.search(&"second"), Some(&3));
+/// ```
 pub struct TrieMap<K, V>
 where
     K: Eq + Hash + Clone,
@@ -119,12 +182,21 @@ where
     _guard: MutexGuard<'a, ()>,
 }
 
+unsafe impl<K: Eq + Hash + Clone, V: Clone> Send for TrieMap<K, V>
+{
+}
+unsafe impl<K: Eq + Hash + Clone, V: Clone> Sync for TrieMap<K, V>
+{
+}
+
 // IMPLEMENTATION:
+
 impl<K, V> TrieMap<K, V>
 where
     K: Eq + Hash + Clone,
     V: Clone,
 {
+    /// Generate an empty TrieMap handle.
     pub fn new() -> Self {
         Self {
             root: Mutex::new(None),
@@ -132,6 +204,7 @@ where
         }
     }
 
+    /// Generate a read transaction for the current map state.
     pub fn read(&self) -> TMReadTxn<K, V> {
         TMReadTxn {
             root: match &*self.root.lock().unwrap() {
@@ -141,11 +214,17 @@ where
         }
     }
 
+    /// Generate a write transaction enabling to modify the map.
+    ///
+    /// If another write transaction is still active, this will wait for it to
+    /// get committed or rolled back.
     pub fn write(&self) -> TMWriteTxn<K, V> {
         let guard = self.write.lock().unwrap();
         self.prepare_write_txn(guard)
     }
 
+    /// Generates a write transaction enabling to modify the map, but only if
+    /// there is no other write transaction currently active.
     pub fn try_write(&self) -> Option<TMWriteTxn<K, V>> {
         let guard = self.write.try_lock();
         match guard {
@@ -187,6 +266,10 @@ where
             Some(vec) => Node::search_in_vec(vec, key),
         }
     }
+
+    pub fn iter_keys<'a>(&'a self) -> TMKeyIter<'a, K, V> {
+        TMKeyIter::new(&self.root)
+    }
 }
 
 impl<'a, K, V> TMWriteTxn<'a, K, V>
@@ -200,6 +283,10 @@ where
             None => None,
             Some(vec) => Node::search_in_vec(vec, key),
         }
+    }
+
+    pub fn iter_keys(&'a self) -> TMKeyIter<'a, K, V> {
+        TMKeyIter::new(&self.root)
     }
 
     pub fn update(&mut self, key: K, val: V) {
@@ -230,6 +317,10 @@ where
         }
     }
 
+    /// Commit the changes done with this write transaction.
+    /// 
+    /// If you wish to roll the changes back, simpy have the TMWriteTxn handle
+    /// dropped.
     pub fn commit(self) {
         *self.caller.root.lock().unwrap() = self.root;
     }
@@ -504,6 +595,177 @@ where
     }
 }
 
+// iterator logic:
+
+// The Iter basically simulates a recursive iter function. There are three
+// states corresponding to iteration states, BranchIter, LeafIter and ElemIter.
+// Each has a reference to the corresponding node (a Vec in the case of
+// ElemIter, ie. basically the actual leaf node in our structure)
+//
+// All three of these IterStates hold values as so: (index, &ref, *mut parent_state),
+// which represents the current index to be processed in the referenced structure,
+// ref: the reference itself, and a mutable ptr to the parent state.
+//
+// This essentially provides a stack simulating the recursion, as stated. The
+// 'root' state is always IterState::Done, which lets us know iteration is
+// complete.
+
+enum IterState<'a, K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    Done,
+    BranchIter(usize, &'a Branch<K, V>, *mut IterState<'a, K, V>),
+    LeafIter(usize, &'a Leaf<K, V>, *mut IterState<'a, K, V>),
+    ElemIter(usize, &'a Vec<(K, V)>, *mut IterState<'a, K, V>),
+}
+
+pub struct TMKeyIter<'a, K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    state: *mut IterState<'a, K, V>,
+}
+
+impl<'a, K, V> TMKeyIter<'a, K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    // generate the beginning of the simulated stack, ie. first of all an
+    // IterState::Done 'node', and if provided $root is Some, also a
+    // connected (having the Done as a parent node) corresponding to the root
+    // node's type (branch or leaf).
+    fn new(root: &'a Ref<K, V>) -> Self {
+        let done_ptr = new_ptr!(IterState::Done);
+        Self {
+            state: match root {
+                None => done_ptr,
+                Some(ref node) => {
+                    match &**node {
+                        Node::Branch(ref branch) => new_ptr!(IterState::BranchIter(0, branch, done_ptr)),
+                        Node::Leaf(ref leaf) => new_ptr!(IterState::LeafIter(0, leaf, done_ptr)),
+                    }
+                }
+            }
+        }
+    }
+
+    // responsible for calling the correct type of iteration behavior
+    fn next_key(&mut self) -> Option<&'a K> {
+        match unsafe { &mut *self.state } {
+            IterState::Done => None,
+            IterState::BranchIter(ref mut idx, branch, parent) => self.branch_next(branch, idx, *parent),
+            IterState::LeafIter(ref mut idx, leaf, parent) => self.leaf_next(leaf, idx, *parent),
+            IterState::ElemIter(ref mut idx, vec, parent) => self.elem_next(vec, idx, *parent),
+        }
+    }
+
+    fn branch_next(&mut self, branch: &'a Branch<K, V>, idx: &mut usize, parent: *mut IterState<'a, K, V>) -> Option<&'a K> {
+        // find the first index in line that isn't None
+        while *idx < CHILD_COUNT {
+            *idx += 1;
+            // a Some child node was find, simulate recursion into it:
+            if let Some(ref arc_node) = branch.refs[*idx - 1] {
+                self.state = match &**arc_node {
+                    Node::Branch(ref branch) => new_ptr!(IterState::BranchIter(0, branch, self.state)),
+                    Node::Leaf(ref leaf) => new_ptr!(IterState::LeafIter(0, leaf, self.state)),
+                };
+                return self.next_key();
+            }
+        }
+        // All child nodes have been processed:
+
+        // free the space taken by the current IterState struct
+        unsafe {
+            Box::from_raw(self.state);
+        }
+        // bactrack to the parent state (either branch state, or Done, if this branch is the map's root)
+        self.state = parent;
+        self.next_key()
+    }
+
+    fn leaf_next(&mut self, leaf: &'a Leaf<K, V>, idx: &mut usize, parent: *mut IterState<'a, K, V>) -> Option<&'a K> {
+        // find the first index in line that isn't None
+        while *idx < CHILD_COUNT {
+            *idx += 1;
+            if let Some(ref arc_elem) = leaf.refs[*idx - 1] {
+                // a Some child vector was find, simulate recursion into it:
+                let (_, ref vec) = &**arc_elem;
+                self.state = new_ptr!(IterState::ElemIter(
+                    0, vec, self.state
+                ));
+                return self.next_key();
+            }
+        }
+        // All child vectors have been processed:
+
+        // free the space taken by the current IterState struct
+        unsafe {
+            Box::from_raw(self.state);
+        }
+        // backtrack to the parent state (branch node state)
+        self.state = parent;
+        self.next_key()
+    }
+
+    fn elem_next(&mut self, elems: &'a Vec<(K, V)>, idx: &mut usize, parent: *mut IterState<'a, K, V>) -> Option<&'a K> {
+        if *idx < elems.len() {
+            // if any element hasn't yet been returned return it and increase the idx
+            *idx += 1;
+            Some(&elems[*idx - 1].0)
+        } else {
+            // all elements in this vector have already been returned:
+
+            // free the space taken by the current IterState struct
+            unsafe {
+                Box::from_raw(self.state);
+            }
+            // backtrack to the parent state (leaf node state)
+            self.state = parent;
+            self.next_key()
+        }
+    }
+}
+
+impl<'a, K, V> Iterator for TMKeyIter<'a, K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    type Item = &'a K;
+    
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_key()
+    }
+}
+
+impl<'a, K, V> Drop for TMKeyIter<'a, K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    fn drop(&mut self) {
+        let mut current = self.state;
+        loop {
+            let current_box = unsafe {
+                Box::from_raw(current)
+            };
+            current = match &*current_box {
+                IterState::Done => return,
+                IterState::BranchIter(_, _, parent) => *parent,
+                IterState::LeafIter(_, _, parent) => *parent,
+                _ => panic!("Unreachable."),  // ElemIter never becomes a parent node
+            };
+        }
+    }
+}
+
+
+// TESTS:
+
 #[cfg(test)]
 mod test {
     use super::TrieMap;
@@ -689,11 +951,41 @@ mod test {
             check_all!(&write, &member[member_idx], 5000);
         }
     }
+
     fn switch_idx(idx: usize) -> usize {
         if idx == 0 {
             1
         } else {
             0
         }
+    }
+
+    #[test]
+    fn iter_keys() {
+        let mut rng = thread_rng();
+        // check a couple shorter iterations
+        for _ in 0..20 {
+            perform_iter_keys_test(rng.gen_range(1, 300));
+        }
+        // check a longer one
+        perform_iter_keys_test(30000);
+    }
+
+    fn perform_iter_keys_test(count: usize) {
+        let map = TrieMap::new();
+        let mut write = map.write();
+        for i in 0..count {
+            write.update(i, ());
+        }
+        write.commit();
+
+        let mut success_count = 0;
+        let mut hit = vec![false; count];
+        for key_ref in map.read().iter_keys() {
+            assert!(!hit[*key_ref as usize], "Key {} was retrieved more than once", *key_ref);
+            hit[*key_ref as usize] = true;
+            success_count += 1;
+        }
+        assert_eq!(count, success_count, "Only {} keys were retrieved", success_count);
     }
 }
