@@ -155,6 +155,19 @@ where
 
 // IMPLEMENTATION:
 
+unsafe impl<K, V> Send for KVMap<K, V>
+where
+    K: Ord + Copy,
+    V: Clone,
+{
+}
+unsafe impl<K, V> Sync for KVMap<K, V>
+where
+    K: Ord + Copy,
+    V: Clone,
+{
+}
+
 impl<K, V> KVMap<K, V>
 where
     K: Ord + Copy,

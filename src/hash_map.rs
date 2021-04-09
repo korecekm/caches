@@ -38,7 +38,7 @@ where
 /// permanently once the transactions are commited (only one write transaction
 /// is allowed at a time).
 ///
-/// HMReadTxn read transactions provides snapshots to the current state of the
+/// HMReadTxn read transactions provide snapshots to the current state of the
 /// hash map, ie. they enable you to search through the records as they were at
 /// the point of the transaction's creation.
 ///
@@ -110,6 +110,19 @@ where
 }
 
 // IMPLEMENTATION:
+
+unsafe impl<K, V> Send for HashMap<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+}
+unsafe impl<K, V> Sync for HashMap<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+}
 
 impl<K, V> HashMap<K, V>
 where
