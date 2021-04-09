@@ -1,7 +1,7 @@
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::mem::{self, MaybeUninit};
 #[cfg(test)]
 use std::fmt::Display;
+use std::mem::{self, MaybeUninit};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 // A concurrently readable, transactional B+ tree
 
@@ -14,11 +14,11 @@ use std::fmt::Display;
 // left; In either case, the node that's called is kept and the merged one
 // (right or left) becomes unused
 enum BPTRemoveResponse<K> {
-    NoChange,       // underflow didn't occur
+    NoChange,                    // underflow didn't occur
     RotateLeft(MaybeUninit<K>),  // the key to the left should be changed for given value
     RotateRight(MaybeUninit<K>), // the key on idx corresponding to changed node should change
-    MergeLeft,      // node was merged with the one to the left
-    MergeRight,     // node was merged with the one to the right
+    MergeLeft,                   // node was merged with the one to the left
+    MergeRight,                  // node was merged with the one to the right
 }
 
 // The maximum number of child nodes
@@ -30,15 +30,16 @@ const B_PARAMETER: usize = 8;
 macro_rules! take_mu {
     ($maybe_uninit:expr) => {
         mem::replace($maybe_uninit, MaybeUninit::uninit())
-    }
+    };
 }
 
 type Child<T> = Option<Arc<T>>;
 
 #[derive(Clone)]
 struct Branch<K, V>
-    where K: Ord + Copy,
-          V: Clone
+where
+    K: Ord + Copy,
+    V: Clone,
 {
     txid: u32,
     key_count: u8,
@@ -47,8 +48,9 @@ struct Branch<K, V>
 }
 #[derive(Clone)]
 struct Leaf<K, V>
-    where K: Ord + Copy,
-          V: Clone
+where
+    K: Ord + Copy,
+    V: Clone,
 {
     txid: u32,
     key_count: u8,
@@ -58,8 +60,9 @@ struct Leaf<K, V>
 
 #[derive(Clone)]
 enum Node<K, V>
-    where K: Ord + Copy,
-          V: Clone
+where
+    K: Ord + Copy,
+    V: Clone,
 {
     Branch(Branch<K, V>),
     Leaf(Leaf<K, V>),
@@ -67,43 +70,43 @@ enum Node<K, V>
 
 /// A concurrently readable, transactional B+ tree holding Key-Value pairs
 /// (ordered by keys).
-/// 
+///
 /// KVMap itself works only as an immutable handle. Modifications to the tree
 /// need to be done via KVMWriteTxn write transactions and are only recorded
 /// permanently when these transactions get commited. KVMReadTxn transactions
 /// provide snapshots to the current state of the tree, ie. they enable you to
 /// search through the records as they were at the point of the transaction's
 /// creation.
-/// 
+///
 /// The read and write transactions may be generated via the `read()` and
 /// `write()` functions, respectively.
-/// 
+///
 /// ## Example:
 /// ```
 /// let map = KVMap::new();
-/// 
+///
 /// // create a KVMWriteTxn handle to be able to modify the tree
 /// let mut write = map.write();
 /// // only one write transaction can exist at a time
 /// assert!(map.try_write().is_none());
-/// 
+///
 /// // insert three new values, update one of them and remove another
 /// write.update(1, 'A');
 /// write.update(2, 'B');
 /// write.update(3, 'C');
 /// write.update(2, 'D');
 /// write.remove(&3);
-/// 
+///
 /// // the write transaction hasn't been commited yet, and therefore isn't
 /// // visible to a new read transaction
 /// assert!(map.read().search(&1).is_none());
-/// 
+///
 /// // commit the write transaction:
 /// // (it is also possible to roll it back simply by dropping the transaction
 /// // handle)
 /// write.commit();
 /// // from now, a new write transaction may be created
-/// 
+///
 /// // a new read transaction will now see all of the records made by the write
 /// // transaction
 /// let read = map.read();
@@ -115,7 +118,7 @@ enum Node<K, V>
 /// (provided both by the read and write transaction structs), giving an
 /// `Option` with the corresponding value's (immutable) reference (or `None`
 /// in case it isn't stored).
-/// 
+///
 /// The currently supported modifying operations (only provided by the write
 /// transaction) are
 /// * `update(key, value)`, which updates a value for given key, or inserts it
@@ -123,23 +126,26 @@ enum Node<K, V>
 /// * `remove(&key)`, which removes given key's record inside the tree (or does
 ///    nothing if it isn't recorded)
 pub struct KVMap<K, V>
-    where K: Ord + Copy,
-          V: Clone
+where
+    K: Ord + Copy,
+    V: Clone,
 {
     root: Mutex<Child<Node<K, V>>>,
     write: Mutex<()>,
 }
 
 pub struct KVMReadTxn<K, V>
-    where K: Ord + Copy,
-          V: Clone
+where
+    K: Ord + Copy,
+    V: Clone,
 {
     root: Child<Node<K, V>>,
 }
 
 pub struct KVMWriteTxn<'a, K, V>
-    where K: Ord + Copy,
-          V: Clone
+where
+    K: Ord + Copy,
+    V: Clone,
 {
     txid: u32,
     caller: &'a KVMap<K, V>,
@@ -150,8 +156,9 @@ pub struct KVMWriteTxn<'a, K, V>
 // IMPLEMENTATION:
 
 impl<K, V> KVMap<K, V>
-    where K: Ord + Copy,
-          V: Clone
+where
+    K: Ord + Copy,
+    V: Clone,
 {
     /// Generate an empty KVMap handle.
     pub fn new() -> Self {
@@ -166,13 +173,13 @@ impl<K, V> KVMap<K, V>
         KVMReadTxn {
             root: match &*self.root.lock().unwrap() {
                 None => None,
-                Some(arc) => Some(arc.clone())
-            }
+                Some(arc) => Some(arc.clone()),
+            },
         }
     }
 
     /// Generate a write transaction enabling to modify the map.
-    /// 
+    ///
     /// If another write transaction is still active, this will wait for it to
     /// get committed or rolled back.
     pub fn write(&self) -> KVMWriteTxn<K, V> {
@@ -197,7 +204,7 @@ impl<K, V> KVMap<K, V>
             Some(arc) => match &**arc {
                 Node::Leaf(ref leaf) => leaf.txid + 1,
                 Node::Branch(ref branch) => branch.txid + 1,
-            }
+            },
         };
         KVMWriteTxn {
             txid,
@@ -212,8 +219,9 @@ impl<K, V> KVMap<K, V>
 }
 
 impl<K, V> KVMReadTxn<K, V>
-    where K: Ord + Copy,
-          V: Clone
+where
+    K: Ord + Copy,
+    V: Clone,
 {
     pub fn search(&self, key: &K) -> Option<&V> {
         match &self.root {
@@ -224,20 +232,24 @@ impl<K, V> KVMReadTxn<K, V>
 
     #[cfg(test)]
     fn check_bptree_properties(&self, expect_record_count: usize)
-        where K: Display
+    where
+        K: Display,
     {
         if let Some(ref arc_root) = self.root {
             let (_, count) = Node::check_bptree_properties(arc_root, None, None, true);
-            assert_eq!(expect_record_count, count,
+            assert_eq!(
+                expect_record_count, count,
                 "Tree was expected to hold {} elements. Actually detected {}.",
-                expect_record_count, count);
+                expect_record_count, count
+            );
         }
     }
 }
 
 impl<'a, K, V> KVMWriteTxn<'a, K, V>
-    where K: Ord + Copy,
-          V: Clone
+where
+    K: Ord + Copy,
+    V: Clone,
 {
     pub fn search(&self, key: &K) -> Option<&V> {
         match &self.root {
@@ -269,24 +281,28 @@ impl<'a, K, V> KVMWriteTxn<'a, K, V>
         self.root = if let Some(arc_root) = mem::take(&mut self.root) {
             let mut arc_root = Node::modify_node(arc_root, self.txid);
             match &mut Arc::get_mut(&mut arc_root).unwrap() {
-                Node::Branch(ref mut branch) => if self.remove_in_root_branch(branch, key) {
-                    return;
-                },
-                Node::Leaf(ref mut leaf) => if self.remove_in_root_leaf(leaf, key) {
-                    return;
-                },
+                Node::Branch(ref mut branch) => {
+                    if self.remove_in_root_branch(branch, key) {
+                        return;
+                    }
+                }
+                Node::Leaf(ref mut leaf) => {
+                    if self.remove_in_root_leaf(leaf, key) {
+                        return;
+                    }
+                }
             }
             Some(arc_root)
-        } else { panic!("Unreachable."); }
+        } else {
+            panic!("Unreachable.");
+        }
     }
 
     /// Returns true if the function modified self.root
     fn remove_in_root_branch(&mut self, branch: &mut Branch<K, V>, key: &K) -> bool {
         // find the corresponding child index
         let mut idx = 0;
-        while idx < branch.key_count as usize
-            && key > unsafe { &*branch.keys[idx].as_ptr() }
-        {
+        while idx < branch.key_count as usize && key > unsafe { &*branch.keys[idx].as_ptr() } {
             idx += 1;
         }
         // prepare neighboring nodes in case called child underflows
@@ -301,8 +317,11 @@ impl<'a, K, V> KVMWriteTxn<'a, K, V>
             None
         };
         // recurse into child corresponding to $key
-        let mut called_arc = Node::modify_node(mem::take(&mut branch.refs[idx]).unwrap(), self.txid);
-        let response = Arc::get_mut(&mut called_arc).unwrap().remove(key, &mut left, &mut right);
+        let mut called_arc =
+            Node::modify_node(mem::take(&mut branch.refs[idx]).unwrap(), self.txid);
+        let response = Arc::get_mut(&mut called_arc)
+            .unwrap()
+            .remove(key, &mut left, &mut right);
         // restore refs that needed to be taken because of recursion
         branch.refs[idx] = Some(called_arc);
         if idx > 0 {
@@ -313,7 +332,7 @@ impl<'a, K, V> KVMWriteTxn<'a, K, V>
         }
         // mutate branch accordingly to remove response
         match response {
-            BPTRemoveResponse::NoChange => {},  // no action
+            BPTRemoveResponse::NoChange => {} // no action
             BPTRemoveResponse::RotateLeft(new_key) => {
                 branch.keys[idx - 1] = new_key;
             }
@@ -358,8 +377,7 @@ impl<'a, K, V> KVMWriteTxn<'a, K, V>
 
         // find corresponding index (key must be present)
         let mut idx = 0;
-        while key > unsafe { &*leaf.keys[idx].as_ptr() }
-        {
+        while key > unsafe { &*leaf.keys[idx].as_ptr() } {
             idx += 1;
         }
         // fill formed gap
@@ -378,20 +396,24 @@ impl<'a, K, V> KVMWriteTxn<'a, K, V>
 
     #[cfg(test)]
     fn check_bptree_properties(&self, expect_record_count: usize)
-        where K: Display
+    where
+        K: Display,
     {
         if let Some(ref arc_root) = self.root {
             let (_, count) = Node::check_bptree_properties(arc_root, None, None, true);
-            assert_eq!(expect_record_count, count,
+            assert_eq!(
+                expect_record_count, count,
                 "Tree was expected to hold {} elements. Actually detected {}.",
-                expect_record_count, count);
+                expect_record_count, count
+            );
         }
     }
 }
 
 impl<K, V> Node<K, V>
-    where K: Ord + Copy,
-          V: Clone
+where
+    K: Ord + Copy,
+    V: Clone,
 {
     /// If given Node (Arc) has given txid, it is returned as is.
     /// Otherwise, the whole Node gets cloned with the given txid and a reference
@@ -427,7 +449,7 @@ impl<K, V> Node<K, V>
                 MaybeUninit::uninit(),
                 MaybeUninit::uninit(),
                 MaybeUninit::uninit(),
-                MaybeUninit::uninit()
+                MaybeUninit::uninit(),
             ],
             refs: [
                 Some(Arc::new(val)),
@@ -437,12 +459,17 @@ impl<K, V> Node<K, V>
                 None,
                 None,
                 None,
-                None
+                None,
             ],
         })))
     }
 
-    fn new_root(txid: u32, key: K, left_child: Arc<Node<K, V>>, right_child: Arc<Node<K, V>>) -> Child<Self> {
+    fn new_root(
+        txid: u32,
+        key: K,
+        left_child: Arc<Node<K, V>>,
+        right_child: Arc<Node<K, V>>,
+    ) -> Child<Self> {
         Some(Arc::new(Self::Branch(Branch {
             txid,
             key_count: 1,
@@ -453,7 +480,7 @@ impl<K, V> Node<K, V>
                 MaybeUninit::uninit(),
                 MaybeUninit::uninit(),
                 MaybeUninit::uninit(),
-                MaybeUninit::uninit()
+                MaybeUninit::uninit(),
             ],
             refs: [
                 Some(left_child),
@@ -463,7 +490,7 @@ impl<K, V> Node<K, V>
                 None,
                 None,
                 None,
-                None
+                None,
             ],
         })))
     }
@@ -506,9 +533,7 @@ impl<K, V> Node<K, V>
     fn update_in_branch(branch: &mut Branch<K, V>, key: K, val: V) -> Option<(K, Arc<Node<K, V>>)> {
         // find the correct child index for this key
         let mut idx = 0;
-        while idx < (branch.key_count as usize)
-            && key > unsafe { *branch.keys[idx].as_ptr() }
-        {
+        while idx < (branch.key_count as usize) && key > unsafe { *branch.keys[idx].as_ptr() } {
             idx += 1;
         }
         let mut child = mem::take(&mut branch.refs[idx]).unwrap();
@@ -538,7 +563,12 @@ impl<K, V> Node<K, V>
         }
     }
 
-    fn split_branch(branch: &mut Branch<K, V>, idx: usize, insert_key: K, right_arc: Arc<Node<K, V>>) -> Option<(K, Arc<Node<K, V>>)> {
+    fn split_branch(
+        branch: &mut Branch<K, V>,
+        idx: usize,
+        insert_key: K,
+        right_arc: Arc<Node<K, V>>,
+    ) -> Option<(K, Arc<Node<K, V>>)> {
         branch.key_count = (B_PARAMETER / 2) as u8;
         let mut right_branch = Branch {
             txid: branch.txid,
@@ -550,18 +580,9 @@ impl<K, V> Node<K, V>
                 MaybeUninit::uninit(),
                 MaybeUninit::uninit(),
                 MaybeUninit::uninit(),
-                MaybeUninit::uninit()
+                MaybeUninit::uninit(),
             ],
-            refs: [
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None
-            ],
+            refs: [None, None, None, None, None, None, None, None],
         };
         // We first copy all elements into a single array and then distribute
         // them into the two branches. That makes our implementation quite a
@@ -579,19 +600,9 @@ impl<K, V> Node<K, V>
             MaybeUninit::uninit(),
             MaybeUninit::uninit(),
             MaybeUninit::uninit(),
-            MaybeUninit::uninit()
+            MaybeUninit::uninit(),
         ];
-        let mut all_refs = [
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None
-        ];
+        let mut all_refs = [None, None, None, None, None, None, None, None, None];
         // branch.refs[0] always stays
         for j in 0..idx {
             all_keys[j] = take_mu!(&mut branch.keys[j]);
@@ -614,7 +625,7 @@ impl<K, V> Node<K, V>
             right_branch.refs[j - (B_PARAMETER / 2)] = mem::take(&mut all_refs[j + 1]);
         }
 
-        Some ((
+        Some((
             unsafe { all_keys[B_PARAMETER / 2].assume_init() },
             Arc::new(Node::Branch(right_branch)),
         ))
@@ -623,16 +634,12 @@ impl<K, V> Node<K, V>
     fn update_in_leaf(leaf: &mut Leaf<K, V>, key: K, val: V) -> Option<(K, Arc<Node<K, V>>)> {
         // find the key's position (or overflow)
         let mut idx: usize = 0;
-        while idx < (leaf.key_count as usize)
-            && key > unsafe { *leaf.keys[idx].as_ptr() }
-        {
+        while idx < (leaf.key_count as usize) && key > unsafe { *leaf.keys[idx].as_ptr() } {
             idx += 1;
         }
 
         // key is already stored
-        if idx < (leaf.key_count as usize)
-            && key == unsafe { *leaf.keys[idx].as_ptr() }
-        {
+        if idx < (leaf.key_count as usize) && key == unsafe { *leaf.keys[idx].as_ptr() } {
             leaf.refs[idx] = Some(Arc::new(val));
             return None;
         }
@@ -655,7 +662,12 @@ impl<K, V> Node<K, V>
         Self::split_leaf(leaf, idx, key, val)
     }
 
-    fn split_leaf(leaf: &mut Leaf<K, V>, idx: usize, key: K, val: V) -> Option<(K, Arc<Node<K, V>>)> {
+    fn split_leaf(
+        leaf: &mut Leaf<K, V>,
+        idx: usize,
+        key: K,
+        val: V,
+    ) -> Option<(K, Arc<Node<K, V>>)> {
         leaf.key_count = ((B_PARAMETER / 2) + 1) as u8;
         let mut right_leaf = Leaf {
             txid: leaf.txid,
@@ -668,18 +680,9 @@ impl<K, V> Node<K, V>
                 MaybeUninit::uninit(),
                 MaybeUninit::uninit(),
                 MaybeUninit::uninit(),
-                MaybeUninit::uninit()
+                MaybeUninit::uninit(),
             ],
-            refs: [
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None
-            ],
+            refs: [None, None, None, None, None, None, None, None],
         };
         // We first copy all elements into a single array and then distribute
         // them into the two leaves. That makes our implementation quite a bit
@@ -694,19 +697,9 @@ impl<K, V> Node<K, V>
             MaybeUninit::uninit(),
             MaybeUninit::uninit(),
             MaybeUninit::uninit(),
-            MaybeUninit::uninit()
+            MaybeUninit::uninit(),
         ];
-        let mut all_refs = [
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None
-        ];
+        let mut all_refs = [None, None, None, None, None, None, None, None, None];
         for j in 0..idx {
             all_keys[j] = take_mu!(&mut leaf.keys[j]);
             all_refs[j] = mem::take(&mut leaf.refs[j]);
@@ -718,9 +711,7 @@ impl<K, V> Node<K, V>
             all_refs[j + 1] = mem::take(&mut leaf.refs[j]);
         }
         // here the actual split happens:
-        let new_key = unsafe {
-            all_keys[B_PARAMETER / 2].clone().assume_init()
-        };
+        let new_key = unsafe { all_keys[B_PARAMETER / 2].clone().assume_init() };
         for j in 0..((B_PARAMETER / 2) + 1) {
             leaf.keys[j] = take_mu!(&mut all_keys[j]);
             leaf.refs[j] = mem::take(&mut all_refs[j]);
@@ -730,13 +721,15 @@ impl<K, V> Node<K, V>
             right_leaf.refs[j] = mem::take(&mut all_refs[j + (B_PARAMETER / 2) + 1]);
         }
 
-        Some((
-            new_key,
-            Arc::new(Node::Leaf(right_leaf)),
-        ))
+        Some((new_key, Arc::new(Node::Leaf(right_leaf))))
     }
 
-    fn remove(&mut self, key: &K, left_neighbor: &mut Child<Self>, right_neighbor: &mut Child<Self>) -> BPTRemoveResponse<K> {
+    fn remove(
+        &mut self,
+        key: &K,
+        left_neighbor: &mut Child<Self>,
+        right_neighbor: &mut Child<Self>,
+    ) -> BPTRemoveResponse<K> {
         match self {
             Node::Branch(ref mut branch) => {
                 Self::remove_from_branch(branch, key, left_neighbor, right_neighbor)
@@ -755,9 +748,7 @@ impl<K, V> Node<K, V>
     ) -> BPTRemoveResponse<K> {
         // find corresponding child index
         let mut idx = 0;
-        while idx < branch.key_count as usize
-            && key > unsafe { &*branch.keys[idx].as_ptr() }
-        {
+        while idx < branch.key_count as usize && key > unsafe { &*branch.keys[idx].as_ptr() } {
             idx += 1;
         }
         // prepare neighboring nodes in case child underflows
@@ -772,8 +763,12 @@ impl<K, V> Node<K, V>
             None
         };
         // recurse into child corresponding to $key
-        let mut called_arc = Node::modify_node(mem::take(&mut branch.refs[idx]).unwrap(), branch.txid);
-        let response = Arc::get_mut(&mut called_arc).unwrap().remove(key, &mut left_child, &mut right_child);
+        let mut called_arc =
+            Node::modify_node(mem::take(&mut branch.refs[idx]).unwrap(), branch.txid);
+        let response =
+            Arc::get_mut(&mut called_arc)
+                .unwrap()
+                .remove(key, &mut left_child, &mut right_child);
         //restore refs that needed to be taken for recursion
         branch.refs[idx] = Some(called_arc);
         if idx > 0 {
@@ -840,21 +835,23 @@ impl<K, V> Node<K, V>
         if let Some(ref neighbor) = right {
             if let Node::Branch(ref right_branch) = &**neighbor {
                 if right_branch.key_count >= min_keys {
-                    response = Some(BPTRemoveResponse::RotateRight(
-                        right_branch.keys[0].clone()
-                    ));
+                    response = Some(BPTRemoveResponse::RotateRight(right_branch.keys[0].clone()));
                 }
-            } else { panic!("Unreachable."); }
+            } else {
+                panic!("Unreachable.");
+            }
         }
         if response.is_none() {
             if let Some(ref neighbor) = left {
                 if let Node::Branch(ref left_branch) = &**neighbor {
                     if left_branch.key_count >= min_keys {
                         response = Some(BPTRemoveResponse::RotateLeft(
-                            left_branch.keys[left_branch.key_count as usize - 1].clone()
+                            left_branch.keys[left_branch.key_count as usize - 1].clone(),
                         ));
                     }
-                } else { panic!("Unreachable."); }
+                } else {
+                    panic!("Unreachable.");
+                }
             }
         }
 
@@ -868,8 +865,10 @@ impl<K, V> Node<K, V>
                         branch.refs[j + 2] = mem::take(&mut branch.refs[j + 1]);
                     }
                     branch.refs[1] = mem::take(&mut branch.refs[0]);
-                    if let Node::Branch(ref mut left_branch) = Arc::get_mut(&mut mut_left).unwrap() {
-                        let take_ref = mem::take(&mut left_branch.refs[left_branch.key_count as usize]);
+                    if let Node::Branch(ref mut left_branch) = Arc::get_mut(&mut mut_left).unwrap()
+                    {
+                        let take_ref =
+                            mem::take(&mut left_branch.refs[left_branch.key_count as usize]);
                         let new_key = take_ref.as_ref().unwrap().rightmost_key();
                         branch.keys[0] = new_key;
                         branch.refs[0] = take_ref;
@@ -879,17 +878,23 @@ impl<K, V> Node<K, V>
                 }
                 BPTRemoveResponse::RotateRight(_) => {
                     let mut mut_right = Self::modify_node(mem::take(right).unwrap(), branch.txid);
-                    let new_key = (&**branch.refs[branch.key_count as usize - 1].as_ref().unwrap()).rightmost_key();
+                    let new_key = (&**branch.refs[branch.key_count as usize - 1].as_ref().unwrap())
+                        .rightmost_key();
                     branch.keys[branch.key_count as usize - 1] = new_key;
-                    if let Node::Branch(ref mut right_branch) = Arc::get_mut(&mut mut_right).unwrap() {
-                        branch.refs[branch.key_count as usize] = mem::take(&mut right_branch.refs[0]);
+                    if let Node::Branch(ref mut right_branch) =
+                        Arc::get_mut(&mut mut_right).unwrap()
+                    {
+                        branch.refs[branch.key_count as usize] =
+                            mem::take(&mut right_branch.refs[0]);
                         right_branch.refs[0] = mem::take(&mut right_branch.refs[1]);
                         for j in 0..(right_branch.key_count as usize - 1) {
                             right_branch.keys[j] = take_mu!(&mut right_branch.keys[j + 1]);
                             right_branch.refs[j + 1] = mem::take(&mut right_branch.refs[j + 2]);
                         }
                         right_branch.key_count -= 1;
-                    } else { panic!("Unreachable."); }
+                    } else {
+                        panic!("Unreachable.");
+                    }
                     *right = Some(mut_right);
                 }
                 _ => panic!("Unreachable."),
@@ -906,15 +911,18 @@ impl<K, V> Node<K, V>
     ) -> BPTRemoveResponse<K> {
         // try merging right neighbor
         if let Some(_) = right {
-            let new_key = (&**branch.refs[branch.key_count as usize - 1].as_ref().unwrap()).rightmost_key();
+            let new_key =
+                (&**branch.refs[branch.key_count as usize - 1].as_ref().unwrap()).rightmost_key();
             branch.keys[branch.key_count as usize - 1] = new_key;
             // Arc counting forces us to take the Rcs in case it has current txid
             let mut mut_right = Self::modify_node(mem::take(right).unwrap(), branch.txid);
             if let Node::Branch(ref mut right_branch) = Arc::get_mut(&mut mut_right).unwrap() {
                 branch.refs[branch.key_count as usize] = mem::take(&mut right_branch.refs[0]);
                 for j in 0..(right_branch.key_count as usize) {
-                    branch.keys[branch.key_count as usize + j] = take_mu!(&mut right_branch.keys[j]);
-                    branch.refs[branch.key_count as usize + j + 1] = mem::take(&mut right_branch.refs[j + 1]);
+                    branch.keys[branch.key_count as usize + j] =
+                        take_mu!(&mut right_branch.keys[j]);
+                    branch.refs[branch.key_count as usize + j + 1] =
+                        mem::take(&mut right_branch.refs[j + 1]);
                 }
                 branch.key_count += right_branch.key_count;
             } else {
@@ -928,11 +936,16 @@ impl<K, V> Node<K, V>
             // Arc counting forces us to take the Rcs in case it has current txid
             let mut mut_left = Self::modify_node(mem::take(left).unwrap(), branch.txid);
             if let Node::Branch(ref mut left_branch) = Arc::get_mut(&mut mut_left).unwrap() {
-                let new_key = (&**left_branch.refs[left_branch.key_count as usize].as_ref().unwrap()).rightmost_key();
+                let new_key = (&**left_branch.refs[left_branch.key_count as usize]
+                    .as_ref()
+                    .unwrap())
+                    .rightmost_key();
                 // move current branch content right so that it goes after records from left neighbor
                 for j in (0..(branch.key_count as usize - 1)).rev() {
-                    branch.keys[left_branch.key_count as usize + j + 1] = take_mu!(&mut branch.keys[j]);
-                    branch.refs[left_branch.key_count as usize + j + 2] = mem::take(&mut branch.refs[j + 1]);
+                    branch.keys[left_branch.key_count as usize + j + 1] =
+                        take_mu!(&mut branch.keys[j]);
+                    branch.refs[left_branch.key_count as usize + j + 2] =
+                        mem::take(&mut branch.refs[j + 1]);
                 }
                 branch.keys[left_branch.key_count as usize] = new_key;
                 branch.refs[left_branch.key_count as usize + 1] = mem::take(&mut branch.refs[0]);
@@ -999,11 +1012,11 @@ impl<K, V> Node<K, V>
         if let Some(ref neighbor) = right {
             if let Node::Leaf(ref right_leaf) = &**neighbor {
                 if right_leaf.key_count > min_keys {
-                    response = Some(BPTRemoveResponse::RotateRight(
-                        right_leaf.keys[0].clone()
-                    ));
+                    response = Some(BPTRemoveResponse::RotateRight(right_leaf.keys[0].clone()));
                 }
-            } else { panic!("Unreachable."); }
+            } else {
+                panic!("Unreachable.");
+            }
         }
         if response.is_none() {
             // see if rotating from left neighbor is possible
@@ -1011,10 +1024,12 @@ impl<K, V> Node<K, V>
                 if let Node::Leaf(ref left_leaf) = &**neighbor {
                     if left_leaf.key_count > min_keys {
                         response = Some(BPTRemoveResponse::RotateLeft(
-                            left_leaf.keys[left_leaf.key_count as usize - 2].clone()
+                            left_leaf.keys[left_leaf.key_count as usize - 2].clone(),
                         ));
                     }
-                } else { panic!("Unreachable."); }
+                } else {
+                    panic!("Unreachable.");
+                }
             }
         }
 
@@ -1032,10 +1047,14 @@ impl<K, V> Node<K, V>
                             leaf.refs[j + 1] = mem::take(&mut leaf.refs[j]);
                         }
                         // rotate last record from left neighbor
-                        leaf.keys[0] = take_mu!(&mut left_leaf.keys[left_leaf.key_count as usize - 1]);
-                        leaf.refs[0] = mem::take(&mut left_leaf.refs[left_leaf.key_count as usize - 1]);
+                        leaf.keys[0] =
+                            take_mu!(&mut left_leaf.keys[left_leaf.key_count as usize - 1]);
+                        leaf.refs[0] =
+                            mem::take(&mut left_leaf.refs[left_leaf.key_count as usize - 1]);
                         left_leaf.key_count -= 1;
-                    } else { panic!("Unreachable."); }
+                    } else {
+                        panic!("Unreachable.");
+                    }
                     *left = Some(mut_left);
                 }
                 BPTRemoveResponse::RotateRight(_) => {
@@ -1057,7 +1076,9 @@ impl<K, V> Node<K, V>
                             right_leaf.refs[j] = mem::take(&mut right_leaf.refs[j + 1]);
                         }
                         right_leaf.key_count -= 1;
-                    } else { panic!("Unreachable."); }
+                    } else {
+                        panic!("Unreachable.");
+                    }
                     *right = Some(mut_right);
                 }
                 _ => panic!("Unreachable."),
@@ -1071,7 +1092,7 @@ impl<K, V> Node<K, V>
         leaf: &mut Leaf<K, V>,
         idx: usize,
         left: &mut Child<Self>,
-        right: &mut Child<Self>
+        right: &mut Child<Self>,
     ) -> BPTRemoveResponse<K> {
         // Try merging right neighbor
         if let Some(_) = right {
@@ -1130,7 +1151,7 @@ impl<K, V> Node<K, V>
         match self {
             Node::Branch(ref branch) => {
                 (&*branch.refs[branch.key_count as usize].as_ref().unwrap()).rightmost_key()
-            },
+            }
             Node::Leaf(ref leaf) => leaf.keys[leaf.key_count as usize - 1].clone(),
         }
     }
@@ -1138,8 +1159,14 @@ impl<K, V> Node<K, V>
     /// Checks B+ tree invariants;
     /// Returns the depth and number of elements of the subtree rooted in given node
     #[cfg(test)]
-    fn check_bptree_properties(node: &Arc<Self>, least_lim: Option<&K>, most_lim: Option<&K>, root: bool) -> (usize, usize)
-        where K: Display
+    fn check_bptree_properties(
+        node: &Arc<Self>,
+        least_lim: Option<&K>,
+        most_lim: Option<&K>,
+        root: bool,
+    ) -> (usize, usize)
+    where
+        K: Display,
     {
         let mut least_lim = least_lim;
         match &**node {
@@ -1149,25 +1176,37 @@ impl<K, V> Node<K, V>
                     assert!(branch.key_count >= min_keys as u8,
                         "Non-root branch nodes are expected to hold at least {} keys, found one with {}.", min_keys, branch.key_count);
                 }
-                assert!(branch.key_count < B_PARAMETER as u8,
+                assert!(
+                    branch.key_count < B_PARAMETER as u8,
                     "Found branch node with {} keys. Maximum is {}.",
-                    branch.key_count, B_PARAMETER - 1);
+                    branch.key_count,
+                    B_PARAMETER - 1
+                );
                 let mut count = 0;
-                let (d, cnt) = Self::check_bptree_properties(branch.refs[0].as_ref().unwrap(), least_lim,
-                    unsafe { Some(&*branch.keys[0].as_ptr()) }, false);
+                let (d, cnt) = Self::check_bptree_properties(
+                    branch.refs[0].as_ref().unwrap(),
+                    least_lim,
+                    unsafe { Some(&*branch.keys[0].as_ptr()) },
+                    false,
+                );
                 count += cnt;
                 for i in 0..(branch.key_count as usize) {
                     if let Some(least) = least_lim {
                         assert!(
                             least < unsafe { &*branch.keys[i].as_ptr() },
                             "Branch key idx {} expected to be over {}, but was {}.",
-                            i, least, unsafe { &*branch.keys[i].as_ptr() }
+                            i,
+                            least,
+                            unsafe { &*branch.keys[i].as_ptr() }
                         );
                     }
                     if let Some(most) = most_lim {
-                        assert!(most >= unsafe { &*branch.keys[i].as_ptr() },
+                        assert!(
+                            most >= unsafe { &*branch.keys[i].as_ptr() },
                             "Branch key idx {} expected to be at most {}, but was {}.",
-                            i, most, unsafe { *branch.keys[i].as_ptr() }
+                            i,
+                            most,
+                            unsafe { *branch.keys[i].as_ptr() }
                         );
                     }
                     least_lim = unsafe { Some(&*branch.keys[i].as_ptr()) };
@@ -1176,8 +1215,17 @@ impl<K, V> Node<K, V>
                     } else {
                         most_lim
                     };
-                    let (d_now, cnt_now) = Self::check_bptree_properties(branch.refs[i + 1].as_ref().unwrap(), least_lim, mlim_subtree, false);
-                    assert_eq!(d, d_now, "Nonequal depths of branch subtrees ({} and {}).", d, d_now);
+                    let (d_now, cnt_now) = Self::check_bptree_properties(
+                        branch.refs[i + 1].as_ref().unwrap(),
+                        least_lim,
+                        mlim_subtree,
+                        false,
+                    );
+                    assert_eq!(
+                        d, d_now,
+                        "Nonequal depths of branch subtrees ({} and {}).",
+                        d, d_now
+                    );
                     count += cnt_now;
                 }
                 (d + 1, count)
@@ -1192,19 +1240,30 @@ impl<K, V> Node<K, V>
                         leaf.key_count
                     );
                 }
-                assert!(leaf.key_count <= B_PARAMETER as u8,
+                assert!(
+                    leaf.key_count <= B_PARAMETER as u8,
                     "Found leaf node with {} keys. Maximum is {}.",
-                    leaf.key_count, B_PARAMETER);
+                    leaf.key_count,
+                    B_PARAMETER
+                );
                 for i in 0..(leaf.key_count as usize) {
                     if let Some(least) = least_lim {
-                        assert!(least < unsafe { &*leaf.keys[i].as_ptr() },
+                        assert!(
+                            least < unsafe { &*leaf.keys[i].as_ptr() },
                             "Leaf key idx {} expected to be over {}, but was {}.",
-                            i, least, unsafe { &*leaf.keys[i].as_ptr() });
+                            i,
+                            least,
+                            unsafe { &*leaf.keys[i].as_ptr() }
+                        );
                     }
                     if let Some(most) = most_lim {
-                        assert!(most >= unsafe { &*leaf.keys[i].as_ptr() },
+                        assert!(
+                            most >= unsafe { &*leaf.keys[i].as_ptr() },
                             "Leaf key idx {} expected to be at most {}, but was {}.",
-                            i, most, unsafe { &*leaf.keys[i].as_ptr() });
+                            i,
+                            most,
+                            unsafe { &*leaf.keys[i].as_ptr() }
+                        );
                     }
                     assert!(leaf.refs[i].is_some());
 
@@ -1215,7 +1274,6 @@ impl<K, V> Node<K, V>
         }
     }
 }
-
 
 #[cfg(test)]
 mod test {
@@ -1236,7 +1294,7 @@ mod test {
         assert!(read.search(&1000).is_none());
         assert_eq!(65, *write.search(&65).unwrap());
         write.commit();
-        
+
         write = map.write();
         for i in 5..120 {
             write.update(i, i * 4);
@@ -1278,10 +1336,10 @@ mod test {
                         e,
                         rec.0,
                         rec.1,
-                    )
+                    ),
                 },
             }
-        }
+        };
     }
 
     #[test]
