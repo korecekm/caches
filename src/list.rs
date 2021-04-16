@@ -1,16 +1,18 @@
 use std::mem;
 use std::ptr::NonNull;
 
+type Link<V> = Option<NonNull<DLNode<V>>>;
+
 // Doubly-linked list
 pub struct DLList<V> {
-    pub(crate) head: Option<NonNull<DLNode<V>>>,
-    pub(crate) tail: Option<NonNull<DLNode<V>>>,
+    pub(crate) head: Link<V>,
+    pub(crate) tail: Link<V>,
     pub size: usize,
 }
 
 pub struct DLNode<V> {
-    pub(crate) prev: Option<NonNull<DLNode<V>>>,
-    pub(crate) next: Option<NonNull<DLNode<V>>>,
+    pub(crate) prev: Link<V>,
+    pub(crate) next: Link<V>,
     pub(crate) elem: V,
 }
 
@@ -41,6 +43,26 @@ impl<V> DLNode<V> {
             }
             queue.insert_head(self as *mut _)
         }
+    }
+
+    pub fn remove(&mut self, queue: &mut DLList<V>) {
+        let prev_node = mem::take(&mut self.prev);
+        let next_node = mem::take(&mut self.next);
+        if let Some(mut prev) = prev_node {
+            unsafe {
+                prev.as_mut().next = next_node;
+            }
+        } else {
+            queue.head = next_node;
+        }
+        if let Some(mut next) = next_node {
+            unsafe {
+                next.as_mut().prev = prev_node;
+            }
+        } else {
+            queue.tail = prev_node;
+        }
+        queue.size -= 1;
     }
 }
 
@@ -88,6 +110,10 @@ impl<V> DLList<V> {
             node.elem
         })
     }
+
+    pub fn iter<'a>(&'a self) -> DLListIter<'a, V> {
+        DLListIter::new(&self.head)
+    }
 }
 
 impl<V> Drop for DLList<V> {
@@ -98,6 +124,32 @@ impl<V> Drop for DLList<V> {
                 current = node.as_mut().next;
                 Box::from_raw(node.as_ptr());
             }
+        }
+    }
+}
+
+pub struct DLListIter<'a, V> {
+    current: &'a Link<V>
+}
+
+impl<'a, V> DLListIter<'a, V> {
+    pub fn new(head: &'a Link<V>) -> Self {
+        Self {
+            current: head,
+        }
+    }
+}
+
+impl<'a, V> Iterator for DLListIter<'a, V> {
+    type Item = &'a V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.current {
+            Some(ref node_ptr) => unsafe {
+                self.current = &node_ptr.as_ref().next;
+                Some(&node_ptr.as_ref().elem)
+            }
+            None => None,
         }
     }
 }
@@ -145,5 +197,18 @@ mod test {
             journal_idx += 1;
         }
         assert_eq!(list.pop_back(), None);
+    }
+
+    #[test]
+    fn iter_simple() {
+        let mut list = DLList::new();
+        for i in 0..10 {
+            list.push_front(i);
+        }
+        let mut iter = 9;
+        for elem in list.iter() {
+            assert_eq!(elem, &iter);
+            iter -= 1;
+        }
     }
 }

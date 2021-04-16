@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 
 // random replacement cache
-struct RRCache<K: Clone + Eq + Hash, V> {
+pub struct RRCache<K: Clone + Eq + Hash, V> {
     capacity: usize,
     map: HashMap<K, V>,
     vec: Vec<K>,
@@ -12,7 +12,7 @@ struct RRCache<K: Clone + Eq + Hash, V> {
 }
 
 impl<K: Clone + Eq + Hash, V> RRCache<K, V> {
-    fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize) -> Self {
         Self {
             capacity,
             map: HashMap::with_capacity(capacity),
@@ -21,12 +21,12 @@ impl<K: Clone + Eq + Hash, V> RRCache<K, V> {
         }
     }
 
-    fn try_get<'a>(&'a mut self, key: &K) -> Option<&'a V> {
+    pub fn get<'a>(&'a mut self, key: &K) -> Option<&'a V> {
         self.map.get(key).map(|value| value)
     }
 
     /// Expects that key isn't already present!
-    fn insert(&mut self, key: K, value: V) {
+    pub fn insert(&mut self, key: K, value: V) {
         if self.vec.len() < self.capacity {
             self.vec.push(key.clone());
         } else {
@@ -48,16 +48,16 @@ mod test {
     fn simple() {
         let mut rr = RRCache::new(3);
         for i in 0..10 {
-            assert_eq!(rr.try_get(&i), None);
+            assert_eq!(rr.get(&i), None);
             rr.insert(i, ('A' as u8 + i) as char);
-            assert_eq!(rr.try_get(&i), Some(&(('A' as u8 + i) as char)));
+            assert_eq!(rr.get(&i), Some(&(('A' as u8 + i) as char)));
         }
         assert_eq!(rr.map.len(), 3);
         assert_eq!(rr.vec.len(), 3);
         let mut count = 0;
         let mut present = [false; 10];
         for i in 0..10 {
-            if rr.try_get(&i).is_some() {
+            if rr.get(&i).is_some() {
                 count += 1;
                 present[i as usize] = true;
             }
@@ -69,7 +69,7 @@ mod test {
                 false => None,
                 true => Some(&c),
             };
-            assert_eq!(rr.try_get(&i), expect);
+            assert_eq!(rr.get(&i), expect);
         }
     }
 }
