@@ -117,7 +117,6 @@ pub fn lru_each(c: &mut Criterion<Misses>) {
                     iterate_sequence_basic!(&mut cache, &mut miss_count);
 
                     // the count won't be different for other iterations since this benchmark is sequential
-                    println!("{}, {} vole", iters, iters as u32 * miss_count);
                     iters as u32 * miss_count
                 })
             }
