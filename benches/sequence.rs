@@ -1,5 +1,6 @@
 use caches::lru::LRUCache as LRU;
 use caches::rr::RRCache as RR;
+use caches::qq::QCache as QQ;
 use criterion::*;
 use criterion::measurement::{Measurement, ValueFormatter};
 use rand::{thread_rng, Rng};
@@ -7,10 +8,9 @@ use std::ptr;
 use std::sync::Mutex;
 use std::thread;
 
-// 
-// 
-// 
-// 
+//
+//
+//
 
 const SEQUENCE_LENGTH: u64 = 0x10000;
 // total number of records
@@ -19,16 +19,79 @@ const MEM_SIZE: usize = 0x400;
 const RANGE: u64 = 10;
 // all keys will be in the range [0, MOD)
 const MOD: u64 = 0x10000000;
+//const THREAD_COUNTS: [usize; 5] = [2, 4, 8, 12, 16];
+const THREAD_COUNTS: [usize; 2] = [2, 16];
 
-// how long a thread sleeps after a cache miss (to simulate HDD lookup)
-// const MISS_PENALTY: Duration = Duration::from_millis(10);
-
-const THREAD_COUNTS: [usize; 5] = [2, 4, 8, 12, 16];
 static mut MISS_COUNT: *const Mutex<u32> = ptr::null();
-
 static mut SEQUENCE: *const Vec<u64> = ptr::null();
-static mut LRUS: *const Vec<LRU<u64, ()>> = ptr::null();
-static mut RRS: *const Vec<RR<u64, ()>> = ptr::null();
+
+static mut LRU_LOCK: *const Mutex<LRU<u64, ()>> = ptr::null();
+static mut RR_LOCK: *const Mutex<RR<u64, ()>> = ptr::null();
+static mut QQ_LOCK: *const Mutex<QQ<u64, ()>> = ptr::null();
+
+// macros supplying general benchmarked behavior:
+
+// iterate SEQUENCE with a sequential cache
+macro_rules! iterate_sequence_basic {
+    ($cache:expr, $miss_count:expr) => {
+        for i in 0..(SEQUENCE_LENGTH as usize) {
+            let elem = unsafe {
+                (*SEQUENCE)[i].clone()
+            };
+
+            if $cache.get(&elem).is_none() {
+                // cache miss
+                *$miss_count += 1;
+
+                $cache.insert(elem, ());
+            }
+        }
+    };
+}
+
+// iterate SEQUENCE with a cache inside a mutex
+macro_rules! iterate_sequence_lock {
+    ($cache:expr, $start_idx:expr) => {
+        let mut idx = $start_idx;
+        for _ in 0..SEQUENCE_LENGTH {
+            let elem = unsafe {
+                (*SEQUENCE)[idx].clone()
+            };
+
+            let mut cache_guard = (*$cache).lock().unwrap();
+            if (*cache_guard).get(&elem).is_none() {
+                // cache miss
+                unsafe {
+                    *(*MISS_COUNT).lock().unwrap() += 1;
+                }
+
+                (*cache_guard).insert(elem, ());
+            }
+            idx = (idx + 1) % (SEQUENCE_LENGTH as usize);
+        }
+    };
+}
+
+// the benchmarked behavior itself for caches behind a mutex
+macro_rules! perform_lock {
+    ($thread_count:expr, $cache:expr, $as:ty) => {
+        let mut handles = Vec::with_capacity($thread_count);
+        for i in 0..$thread_count {
+            let join_handle = thread::spawn(move || {
+                iterate_sequence_lock!(
+                    unsafe {
+                        ($cache as *mut $as).as_mut().unwrap()
+                    },
+                    i * (SEQUENCE_LENGTH as usize / $thread_count)
+                );
+            });
+            handles.push(join_handle);
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    };
+}
 
 
 pub fn lru_each(c: &mut Criterion<Misses>) {
@@ -41,34 +104,69 @@ pub fn lru_each(c: &mut Criterion<Misses>) {
         group.bench_with_input(
             BenchmarkId::from_parameter(thread_count),
             thread_count,
-            |b, &size| {
+            |b, &count| {
                 b.iter_custom(|iters| {
-                    // prepare the LRUs:
-                    let mut caches = Vec::with_capacity(size);
-                    for _ in 0..size {
-                        caches.push(LRU::new(MEM_SIZE / size));
-                    }
-                    unsafe {
-                        LRUS = &caches;
-                    }
+                    // prepare cache and miss count
+                    let mut cache = LRU::new(MEM_SIZE / count);
+                    let mut mock_count = 0;
+                    let mut miss_count = 0;
 
-                    // Run sequence once without counting misses to then work with a full cache
-                    let mock_count = Mutex::new(0u32);
-                    unsafe {
-                        MISS_COUNT = &mock_count;
-                    }
-                    perform_lru_each(size);
+                    // Run once without counting misses to fill cache
+                    iterate_sequence_basic!(&mut cache, &mut mock_count);
+                    // Now count the misses
+                    iterate_sequence_basic!(&mut cache, &mut miss_count);
 
-                    let miss_count = Mutex::new(0u32);
+                    // the count won't be different for other iterations since this benchmark is sequential
+                    println!("{}, {} vole", iters, iters as u32 * miss_count);
+                    iters as u32 * miss_count
+                })
+            }
+        );
+    }
+    group.finish();
+}
+
+pub fn lru_lock(c: &mut Criterion<Misses>) {
+    if unsafe { SEQUENCE.is_null() } {
+        prepare_sequence();
+    }
+
+    let mut group = c.benchmark_group("lru_lock");
+    for thread_count in THREAD_COUNTS.iter() {
+        group.bench_with_input(
+            BenchmarkId::from_parameter(thread_count),
+            thread_count,
+            |b, &threads| {
+                b.iter_custom(|iters| {
+                    // prepare cache and miss count
+                    let cache = Box::into_raw(Box::new(Mutex::new(LRU::new(MEM_SIZE))));
                     unsafe {
-                        MISS_COUNT = &miss_count;
+                        LRU_LOCK = cache;
+                    }
+                    let mock_count = Box::into_raw(Box::new(Mutex::new(0)));
+                    let miss_count = Box::into_raw(Box::new(Mutex::new(0)));
+
+                    // Run once without counting misses to fill cache
+                    unsafe {
+                        MISS_COUNT = mock_count;
+                    }
+                    perform_lock!(threads, LRU_LOCK, Mutex<LRU<u64, ()>>);
+                    // Now 'iters' times with counting
+                    unsafe {
+                        MISS_COUNT = miss_count;
                     }
                     for _ in 0..iters {
-                        perform_lru_each(size);
+                        perform_lock!(threads, LRU_LOCK, Mutex<LRU<u64, ()>>);
                     }
-                    let count = *miss_count.lock().unwrap();
-                    //count
-                    iters as u32 * 4
+
+                    unsafe {
+                        Box::from_raw(cache);
+                        Box::from_raw(mock_count);
+                    }
+                    let misses = unsafe {
+                        *(*Box::from_raw(miss_count)).lock().unwrap()
+                    };
+                    misses
                 })
             }
         );
@@ -80,20 +178,17 @@ fn miss_counting() -> Criterion<Misses> {
     Criterion::default().with_measurement(Misses)
 }
 
-/*
-pub fn rr_each(c: &mut Criterion) {}
-pub fn lru_lock(c: &mut Criterion) {}
-pub fn rr_lock(c: &mut Criterion) {}
-
-criterion_group!(each_thread, lru_each, rr_each);
-criterion_group!(lock, lru_lock, rr_lock);
-criterion_main!(each_thread, lock);*/
 criterion_group! {
-    name = lru;
+    name = each;
     config = miss_counting();
     targets = lru_each
 }
-criterion_main!(lru);
+criterion_group! {
+    name = lock;
+    config = miss_counting();
+    targets = lru_lock
+}
+criterion_main!(each);
 
 fn prepare_sequence() {
     let mut rng = thread_rng();
@@ -112,48 +207,6 @@ fn prepare_sequence() {
 }
 
 
-macro_rules! iterate_sequence {
-    ($cache:expr, $start_idx:expr) => {
-        let mut idx = $start_idx;
-        for _ in 0..SEQUENCE_LENGTH {
-            let elem = unsafe {
-                (*SEQUENCE)[idx].clone()
-            };
-
-            if $cache.get(&elem).is_none() {
-                // cache miss
-                unsafe {
-                    *(*MISS_COUNT).lock().unwrap() += 1;
-                }
-
-                $cache.insert(elem, ());
-            }
-            idx = (idx + 1) % (SEQUENCE_LENGTH as usize);
-        }
-    };
-}
-
-fn perform_lru_each(thread_count: usize) {
-    let mut handles = Vec::with_capacity(thread_count);
-    for i in 0..thread_count {
-        let join_handle = thread::spawn(move || {
-            black_box(move || {
-                iterate_sequence!(
-                    unsafe {
-                        &mut (LRUS as *mut Vec<LRU<u64, ()>>).as_mut().unwrap()[i]
-                    },
-                    i * (SEQUENCE_LENGTH as usize / thread_count)
-                );
-            })
-        });
-        handles.push(join_handle);
-    }
-    for handle in handles {
-        handle.join().unwrap();
-    }
-}
-
-
 pub struct Misses;
 impl Measurement for Misses {
     type Intermediate = *mut Mutex<u32>;
@@ -167,7 +220,7 @@ impl Measurement for Misses {
         let mutex = unsafe {
             Box::from_raw(i)
         };
-        let v = (*mutex.lock().unwrap());
+        let v = *mutex.lock().unwrap();
         v
     }
     fn add(&self, v1: &Self::Value, v2: &Self::Value) -> Self::Value {

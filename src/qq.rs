@@ -2,8 +2,6 @@ use crate::list::{DLList, DLNode};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::ptr::NonNull;
-#[cfg(test)]
-use std::fmt::Display;
 
 enum RecordType {
     Q1Elem,
