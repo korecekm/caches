@@ -27,8 +27,8 @@
 // main queue)
 
 use caches::lru::LRUCache as LRU;
-use caches::rr::RRCache as RR;
 use caches::qq::QCache as QQ;
+use caches::rr::RRCache as RR;
 use criterion::*;
 use rand::{thread_rng, Rng};
 use std::ptr;
@@ -61,9 +61,7 @@ macro_rules! iterate_data_basic {
     ($cache:expr, $start_idx:expr, $step:expr) => {
         let mut idx = $start_idx;
         while idx < DATA_LENGTH {
-            let key = unsafe {
-                (*GENERATED_DATA)[idx]
-            };
+            let key = unsafe { (*GENERATED_DATA)[idx] };
 
             if $cache.get(&key).is_none() {
                 // cache miss
@@ -84,9 +82,7 @@ macro_rules! iterate_data_lock {
     ($cache:expr, $start_idx:expr, $step:expr) => {
         let mut idx = $start_idx;
         while idx < DATA_LENGTH {
-            let key = unsafe {
-                (*GENERATED_DATA)[idx]
-            };
+            let key = unsafe { (*GENERATED_DATA)[idx] };
 
             let mut cache_guard = (*$cache).lock().unwrap();
             if (*cache_guard).get(&key).is_none() {
@@ -110,9 +106,7 @@ macro_rules! perform_each {
         for i in 0..$thread_count {
             let join_handle = std::thread::spawn(move || {
                 iterate_data_basic!(
-                    unsafe {
-                        &mut ($caches as *mut Vec<$as>).as_mut().unwrap()[i]
-                    },
+                    unsafe { &mut ($caches as *mut Vec<$as>).as_mut().unwrap()[i] },
                     i,
                     $thread_count
                 );
@@ -133,9 +127,7 @@ macro_rules! perform_lock {
         for i in 0..$thread_count {
             let join_handle = std::thread::spawn(move || {
                 iterate_data_lock!(
-                    unsafe {
-                        ($cache as *mut $as).as_mut().unwrap()
-                    },
+                    unsafe { ($cache as *mut $as).as_mut().unwrap() },
                     i,
                     $thread_count
                 );
@@ -147,7 +139,6 @@ macro_rules! perform_lock {
         }
     };
 }
-
 
 // The actual benchmark functions can be simplified with a single macro definition for all
 // (similarly to what's done in the imitation_miss_count benchmark)
@@ -190,7 +181,7 @@ pub fn rr_each(c: &mut Criterion) {
                     }
                     elapsed_duration
                 })
-            }
+            },
         );
     }
     group.finish();
@@ -212,9 +203,7 @@ pub fn lru_each(c: &mut Criterion) {
                     // prepare the caches
                     let mut cache_vector = Box::new(Vec::with_capacity(threads));
                     for _ in 0..threads {
-                        (*cache_vector).push(
-                            LRU::new(MEM_SIZE / threads)
-                        );
+                        (*cache_vector).push(LRU::new(MEM_SIZE / threads));
                     }
                     let caches = Box::into_raw(cache_vector);
                     unsafe {
@@ -235,7 +224,7 @@ pub fn lru_each(c: &mut Criterion) {
                     }
                     elapsed_duration
                 })
-            }
+            },
         );
     }
     group.finish();
@@ -257,13 +246,11 @@ pub fn qq_each(c: &mut Criterion) {
                     // prepare the caches
                     let mut cache_vector = Box::new(Vec::with_capacity(threads));
                     for _ in 0..threads {
-                        (*cache_vector).push(
-                            QQ::new(
-                                MEM_SIZE / threads / 4,
-                                MEM_SIZE / threads / 4,
-                                MEM_SIZE / threads / 2
-                            )
-                        );
+                        (*cache_vector).push(QQ::new(
+                            MEM_SIZE / threads / 4,
+                            MEM_SIZE / threads / 4,
+                            MEM_SIZE / threads / 2,
+                        ));
                     }
                     let caches = Box::into_raw(cache_vector);
                     unsafe {
@@ -284,7 +271,7 @@ pub fn qq_each(c: &mut Criterion) {
                     }
                     elapsed_duration
                 })
-            }
+            },
         );
     }
     group.finish();
@@ -323,7 +310,7 @@ pub fn rr_lock(c: &mut Criterion) {
                     }
                     elapsed_duration
                 })
-            }
+            },
         );
     }
     group.finish();
@@ -347,7 +334,7 @@ pub fn lru_lock(c: &mut Criterion) {
                     unsafe {
                         LRU_LOCK = cache;
                     }
-                    
+
                     // run once without measuring time to fill cache
                     perform_lock!(threads, LRU_LOCK, Mutex<LRU<u64, ()>>);
                     // now 'iters' times and measure the time
@@ -362,7 +349,7 @@ pub fn lru_lock(c: &mut Criterion) {
                     }
                     elapsed_duration
                 })
-            }
+            },
         );
     }
     group.finish();
@@ -382,17 +369,15 @@ pub fn qq_lock(c: &mut Criterion) {
             |b, &threads| {
                 b.iter_custom(|iters| {
                     //prepare the cache
-                    let cache = Box::into_raw(Box::new(Mutex::new(
-                        QQ::new(
-                            MEM_SIZE / 4,
-                            MEM_SIZE / 4,
-                            MEM_SIZE / 2
-                        )
-                    )));
+                    let cache = Box::into_raw(Box::new(Mutex::new(QQ::new(
+                        MEM_SIZE / 4,
+                        MEM_SIZE / 4,
+                        MEM_SIZE / 2,
+                    ))));
                     unsafe {
                         QQ_LOCK = cache;
                     }
-                    
+
                     // run once without measuring time to fill cache
                     perform_lock!(threads, QQ_LOCK, Mutex<QQ<u64, ()>>);
                     // now 'iters' times and measure the time
@@ -407,7 +392,7 @@ pub fn qq_lock(c: &mut Criterion) {
                     }
                     elapsed_duration
                 })
-            }
+            },
         );
     }
     group.finish();
@@ -416,7 +401,6 @@ pub fn qq_lock(c: &mut Criterion) {
 criterion_group!(lock, rr_lock, lru_lock, qq_lock);
 criterion_group!(each, rr_each, lru_each, qq_each);
 criterion_main!(lock, each);
-
 
 // This is how the real-usecase sample is expanded: since the sample includes keys from 0 to 18,
 // we are able to increment each by 19 and get the same sequence with disjunct keys.
@@ -442,5 +426,8 @@ fn prepare_data() {
     }
 }
 
-const ACCESS_UIDS: [u64; 57] = [ 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 4, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 0,
-    11, 6, 15, 10, 1, 5, 9, 13, 12, 7, 16, 8, 14, 0, 18, 18, 0, 11, 18, 2, 3, 0, 18, 3, 0, 1, 18, 2, 3, 0, 3 ];
+const ACCESS_UIDS: [u64; 57] = [
+    0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 4, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 0, 11, 6,
+    15, 10, 1, 5, 9, 13, 12, 7, 16, 8, 14, 0, 18, 18, 0, 11, 18, 2, 3, 0, 18, 3, 0, 1, 18, 2, 3, 0,
+    3,
+];

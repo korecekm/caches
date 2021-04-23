@@ -4,8 +4,8 @@
 // without stalling on cache miss, because all 'threads' behave simply sequentially.
 
 use caches::lru::LRUCache as LRU;
-use caches::rr::RRCache as RR;
 use caches::qq::QCache as QQ;
+use caches::rr::RRCache as RR;
 use rand::{thread_rng, Rng};
 use std::ptr;
 use std::sync::Mutex;
@@ -36,9 +36,7 @@ macro_rules! iterate_data_basic {
     ($cache:expr, $start_idx:expr, $step:expr, $miss_count:expr) => {
         let mut idx = $start_idx;
         while idx < DATA_LENGTH {
-            let key = unsafe {
-                (*GENERATED_DATA)[idx]
-            };
+            let key = unsafe { (*GENERATED_DATA)[idx] };
 
             if $cache.get(&key).is_none() {
                 // cache miss
@@ -56,16 +54,12 @@ macro_rules! iterate_data_lock {
     ($cache:expr, $start_idx:expr, $step:expr) => {
         let mut idx = $start_idx;
         while idx < DATA_LENGTH {
-            let key = unsafe {
-                (*GENERATED_DATA)[idx]
-            };
+            let key = unsafe { (*GENERATED_DATA)[idx] };
 
             let mut cache_guard = (*$cache).lock().unwrap();
             if (*cache_guard).get(&key).is_none() {
                 // cache miss
-                unsafe {
-                    *(*MISS_COUNT).lock().unwrap() += 1
-                }
+                unsafe { *(*MISS_COUNT).lock().unwrap() += 1 }
                 // Sleeping here isn't absolutely necessary, but it is kept so that the behavior is
                 // absolutely identical with the one in 'imitation.rs'
                 thread::sleep(MISS_WAIT);
@@ -80,12 +74,7 @@ macro_rules! iterate_data_lock {
 macro_rules! perform_each {
     ($thread_count:expr, $caches:expr, $miss_count:expr) => {
         for i in 0..$thread_count {
-            iterate_data_basic!(
-                $caches[i],
-                i,
-                $thread_count,
-                $miss_count
-            );
+            iterate_data_basic!($caches[i], i, $thread_count, $miss_count);
         }
     };
 }
@@ -96,9 +85,7 @@ macro_rules! perform_lock {
         for i in 0..$thread_count {
             let join_handle = std::thread::spawn(move || {
                 iterate_data_lock!(
-                    unsafe {
-                        ($cache as *mut Mutex<$as>).as_mut().unwrap()
-                    },
+                    unsafe { ($cache as *mut Mutex<$as>).as_mut().unwrap() },
                     i,
                     $thread_count
                 );
@@ -116,9 +103,7 @@ macro_rules! bench_lock {
         println!("");
         for thread_count in THREAD_COUNTS.iter() {
             // prepare cache and miss count
-            let cache = Box::into_raw(Box::new(
-                Mutex::new($cache)
-            ));
+            let cache = Box::into_raw(Box::new(Mutex::new($cache)));
             unsafe {
                 $const_cache = cache;
             }
@@ -137,21 +122,16 @@ macro_rules! bench_lock {
             for _ in 0..SAMPLE_SIZE {
                 perform_lock!(*thread_count, $const_cache, $as);
             }
-            
+
             unsafe {
                 Box::from_raw(cache);
                 Box::from_raw(mock_count);
             }
-            let misses = unsafe {
-                *(*Box::from_raw(miss_count)).lock().unwrap()
-            };
+            let misses = unsafe { *(*Box::from_raw(miss_count)).lock().unwrap() };
             let mean = misses as f64 / SAMPLE_SIZE as f64;
             println!(
                 "{}/{}: Out of {} cache searches, there were a mean of {} misses.",
-                $bench_name,
-                thread_count,
-                DATA_LENGTH,
-                mean
+                $bench_name, thread_count, DATA_LENGTH, mean
             );
         }
     };
@@ -176,10 +156,7 @@ macro_rules! bench_each {
 
             println!(
                 "{}/{}: Out of {} cache searches, there were {} misses.",
-                $bench_name,
-                thread_count,
-                DATA_LENGTH,
-                miss_count
+                $bench_name, thread_count, DATA_LENGTH, miss_count
             );
         }
     };
@@ -217,34 +194,25 @@ fn qq_lock() {
 }
 
 fn rr_each() {
-    bench_each!(
-        "random_replacement-each_thread",
-        |thread_count| {
-            RR::new(MEM_SIZE / thread_count)
-        }
-    );
+    bench_each!("random_replacement-each_thread", |thread_count| {
+        RR::new(MEM_SIZE / thread_count)
+    });
 }
 
 fn lru_each() {
-    bench_each!(
-        "LRU-each_thread",
-        |thread_count| {
-            LRU::new(MEM_SIZE / thread_count)
-        }
-    );
+    bench_each!("LRU-each_thread", |thread_count| {
+        LRU::new(MEM_SIZE / thread_count)
+    });
 }
 
 fn qq_each() {
-    bench_each!(
-        "2Q-each_thread",
-        |thread_count| {
-            QQ::new(
-                MEM_SIZE / thread_count / 4,
-                MEM_SIZE / thread_count / 4,
-                MEM_SIZE / thread_count / 2
-            )
-        }
-    );
+    bench_each!("2Q-each_thread", |thread_count| {
+        QQ::new(
+            MEM_SIZE / thread_count / 4,
+            MEM_SIZE / thread_count / 4,
+            MEM_SIZE / thread_count / 2,
+        )
+    });
 }
 
 fn main() {
@@ -259,7 +227,7 @@ fn main() {
     rr_each();
     lru_each();
     qq_each();
-     
+
     println!("");
 }
 
@@ -281,5 +249,8 @@ fn prepare_data() {
     }
 }
 
-const ACCESS_UIDS: [u64; 57] = [ 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 4, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 0,
-    11, 6, 15, 10, 1, 5, 9, 13, 12, 7, 16, 8, 14, 0, 18, 18, 0, 11, 18, 2, 3, 0, 18, 3, 0, 1, 18, 2, 3, 0, 3 ];
+const ACCESS_UIDS: [u64; 57] = [
+    0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 4, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 0, 11, 6,
+    15, 10, 1, 5, 9, 13, 12, 7, 16, 8, 14, 0, 18, 18, 0, 11, 18, 2, 3, 0, 18, 3, 0, 1, 18, 2, 3, 0,
+    3,
+];
