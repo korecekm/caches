@@ -16,8 +16,11 @@ concread = { git = "https://github.com/kanidm/concread.git", rev = "72430fb42a56
 concache = "0.2.1"
 
 [[bench]]
-name = "lru_bench"
+name = "hashmaps_bench"
 harness = false
 [[bench]]
-name = "hashmaps_bench"
+name = "imitation"
+harness = false
+[[bench]]
+name = "imitation_miss_count"
 harness = false
