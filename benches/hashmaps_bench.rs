@@ -142,10 +142,30 @@ pub fn concread_updates(c: &mut Criterion) {
     );
 }
 
+pub fn null_bench(c: &mut Criterion) {
+    prepare_benches();
+    let mut group = c.benchmark_group("null-benchmark");
+    for bench_idx in 0..3 {
+        let query_count = QUERY_COUNTS[bench_idx];
+        group.bench_with_input(
+            BenchmarkId::from_parameter(query_count),
+            &query_count,
+            |b, &idx| {
+                b.iter_batched(
+                    || unsafe { &*QUERIES_STANDARD[idx] },
+                    |queries| black_box(perform_null_bench(queries)),
+                    BatchSize::SmallInput,
+                )
+            }
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     standard,
     std_standard,
-    //concache_standard,
+    concache_standard,
     trie_standard,
     bptree_standard,
     concread_standard
@@ -153,12 +173,13 @@ criterion_group!(
 criterion_group!(
     updates,
     std_updates,
-    //concache_updates,
+    concache_updates,
     trie_updates,
     bptree_updates,
-    concache_updates
+    concread_updates
 );
-criterion_main!(standard, updates);
+criterion_group!(null, null_bench);
+criterion_main!(standard, updates, null);
 
 // HASHMAP ACTIONS GENERATION:
 
@@ -304,6 +325,26 @@ fn perform_stdhashmap_bench(queries: &Vec<HashmapAction>) {
             }
             HashmapAction::Remove(k) => {
                 map.remove(&k);
+            }
+        }
+    }
+}
+
+fn perform_null_bench(queries: &Vec<HashmapAction>) {
+    let map = TrieMap::<u32, ()>::new();
+    let write_txn = map.write();
+    for q in queries.iter() {
+        // hopefully this doesn't get optimized inside the black_box
+        match q {
+            HashmapAction::Commit => {}
+            HashmapAction::Search(k) => {
+                write_txn.search(&k);
+            }
+            HashmapAction::Update(k) => {
+                write_txn.search(&k);
+            }
+            HashmapAction::Remove(k) => {
+                write_txn.search(&k);
             }
         }
     }
