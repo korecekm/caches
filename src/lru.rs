@@ -43,6 +43,23 @@ impl<K: Clone + Eq + Hash, V> LRUCache<K, V> {
         }
         self.list.size += 1;
     }
+
+    /// Like get, but removing the record from the cache.
+    /// This is useful when this LRU is a thread-local cache and the thread
+    /// currently has write privilege to a global transactional cache, ie if
+    /// a record is present in our local cache, we can remove it from here and
+    /// include it in the global cache instead.
+    pub fn extract(&mut self, key: &K) -> Option<V> {
+        if let Some(node) = self.map.remove(key) {
+            let mut node = unsafe {
+                *Box::from_raw(node.as_ptr())
+            };
+            node.remove(&mut self.list);
+            Some(node.elem.1)
+        } else {
+            None
+        }
+    }
 }
 
 // Test:
@@ -70,6 +87,28 @@ mod test {
         assert_eq!(lru.list.size, 3);
         for i in [(1, 'A'), (3, 'C'), (4, 'D')].iter() {
             assert_eq!(lru.list.pop_back(), Some(*i));
+        }
+        assert_eq!(lru.list.size, 0);
+        assert_eq!(lru.list.pop_back(), None);
+    }
+
+    #[test]
+    fn extract_simple() {
+        let mut lru = LRUCache::new(5);
+        assert_eq!(lru.extract(&7), None);
+        for i in 1..11 {
+            lru.insert(i, 2*i);
+        }
+        assert_eq!(lru.extract(&5), None);
+        
+        assert_eq!(lru.list.size, 5);
+        assert_eq!(lru.extract(&7), Some(14));
+        assert_eq!(lru.list.size, 4);
+        assert_eq!(lru.extract(&9), Some(18));
+        assert_eq!(lru.list.size, 3);
+
+        for elem in [(6, 12), (8, 16), (10, 20)].iter() {
+            assert_eq!(lru.list.pop_back(), Some(*elem));
         }
         assert_eq!(lru.list.size, 0);
         assert_eq!(lru.list.pop_back(), None);
