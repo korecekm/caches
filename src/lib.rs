@@ -9,3 +9,4 @@ pub mod lru;
 pub mod lru_transactional;
 pub mod rr;
 pub mod qq;
+pub mod qq_lfu;
