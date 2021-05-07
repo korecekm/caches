@@ -132,7 +132,7 @@ impl<K: Clone + Eq + Hash, V, const CAPACITY: usize> LFUCache<K, V, CAPACITY> {
     /// lower freq counter values.
     /// (this is useful mainly when inserting a new heap value, where the
     /// element is first inserted as the very last heap-array value and only
-    /// than moves 'up' in the heap, according to it's freq count, which is at
+    /// then moves 'up' in the heap, according to it's freq count, which is at
     /// that point 0)
     /// Freq counter at $heap_idx is expected to be at zero
     fn heap_bubble_up(&mut self, heap_idx: &mut usize) {

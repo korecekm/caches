@@ -45,6 +45,10 @@ impl<V> DLNode<V> {
         }
     }
 
+    /// Remove this node from the given list (that reference is only needed in
+    /// case first or last node is removed).
+    /// ! note that for a node inside a NonNull, this doesn't deallocate its'
+    /// memory !
     pub fn remove(&mut self, queue: &mut DLList<V>) {
         let prev_node = mem::take(&mut self.prev);
         let next_node = mem::take(&mut self.next);
