@@ -35,18 +35,17 @@ impl<V> DLNode<V> {
                 None => unsafe {
                     prev.as_mut().next = None;
                     queue.tail = Some(prev);
-                }
+                },
                 Some(mut next) => unsafe {
                     next.as_mut().prev = Some(prev);
                     prev.as_mut().next = Some(next);
-                }
+                },
             }
             queue.insert_head(self as *mut _)
         }
     }
 
-    /// Remove this node from the given list (that reference is only needed in
-    /// case first or last node is removed).
+    /// Remove this node from the given list.
     /// ! note that for a node inside a NonNull, this doesn't deallocate its'
     /// memory !
     pub fn remove(&mut self, queue: &mut DLList<V>) {
@@ -79,6 +78,9 @@ impl<V> DLList<V> {
         }
     }
 
+    /// Inserts the given Node as the queue head.
+    /// ! since it is a utility function not made for public use, it doesn't
+    /// increase the list's size, you may need to do that manually.
     pub(crate) fn insert_head(&mut self, node: *mut DLNode<V>) {
         match self.head {
             None => {
@@ -115,6 +117,11 @@ impl<V> DLList<V> {
         })
     }
 
+    /// Get a reference to the element at the back of this list (if there are any elements).
+    pub fn get_back<'a>(&'a self) -> Option<&V> {
+        self.tail.map(|node| unsafe { &(*node.as_ptr()).elem })
+    }
+
     pub fn iter<'a>(&'a self) -> DLListIter<'a, V> {
         DLListIter::new(&self.head)
     }
@@ -133,14 +140,12 @@ impl<V> Drop for DLList<V> {
 }
 
 pub struct DLListIter<'a, V> {
-    current: &'a Link<V>
+    current: &'a Link<V>,
 }
 
 impl<'a, V> DLListIter<'a, V> {
     pub fn new(head: &'a Link<V>) -> Self {
-        Self {
-            current: head,
-        }
+        Self { current: head }
     }
 }
 
@@ -152,7 +157,7 @@ impl<'a, V> Iterator for DLListIter<'a, V> {
             Some(ref node_ptr) => unsafe {
                 self.current = &node_ptr.as_ref().next;
                 Some(&node_ptr.as_ref().elem)
-            }
+            },
             None => None,
         }
     }
