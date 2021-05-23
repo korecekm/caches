@@ -23,7 +23,7 @@ impl<K: Clone + Eq + Hash, V> LRUCache<K, V> {
             Some(node) => unsafe {
                 node.as_mut().move_to_front(&mut self.list);
                 Some(&node.as_ref().elem.1)
-            }
+            },
             None => None,
         }
     }
@@ -51,9 +51,7 @@ impl<K: Clone + Eq + Hash, V> LRUCache<K, V> {
     /// include it in the global cache instead.
     pub fn extract(&mut self, key: &K) -> Option<V> {
         if let Some(node) = self.map.remove(key) {
-            let mut node = unsafe {
-                *Box::from_raw(node.as_ptr())
-            };
+            let mut node = unsafe { *Box::from_raw(node.as_ptr()) };
             node.remove(&mut self.list);
             Some(node.elem.1)
         } else {
@@ -97,10 +95,10 @@ mod test {
         let mut lru = LRUCache::new(5);
         assert_eq!(lru.extract(&7), None);
         for i in 1..11 {
-            lru.insert(i, 2*i);
+            lru.insert(i, 2 * i);
         }
         assert_eq!(lru.extract(&5), None);
-        
+
         assert_eq!(lru.list.size, 5);
         assert_eq!(lru.extract(&7), Some(14));
         assert_eq!(lru.list.size, 4);

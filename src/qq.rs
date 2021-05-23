@@ -27,12 +27,7 @@ pub struct QCache<K: Clone + Eq + Hash, V> {
 }
 
 impl<K: Clone + Eq + Hash, V> QCache<K, V> {
-    pub fn new(
-        q1_capacity: usize,
-        q2_capacity: usize,
-        lru_capacity: usize,
-    ) -> Self
-    {
+    pub fn new(q1_capacity: usize, q2_capacity: usize, lru_capacity: usize) -> Self {
         Self {
             q1_capacity,
             q2_capacity,
@@ -46,23 +41,19 @@ impl<K: Clone + Eq + Hash, V> QCache<K, V> {
 
     pub fn get<'a>(&'a mut self, key: &K) -> Option<&'a V> {
         match self.map.get(key) {
-            Some(node_ptr) => Some(
-                self.access(node_ptr.clone())
-            ),
+            Some(node_ptr) => Some(self.access(node_ptr.clone())),
             None => None,
         }
     }
 
     fn access<'a>(&'a mut self, node_ref: NonNull<DLNode<Record<K, V>>>) -> &'a V {
-        let node = unsafe {
-            &mut (*node_ref.as_ptr())
-        };
+        let node = unsafe { &mut (*node_ref.as_ptr()) };
         match node.elem.rec_type {
             RecordType::Q2Elem => {
                 // move a record inside the second queue to the main queue on new access
                 node.elem.rec_type = RecordType::LRUElem;
                 node.remove(&mut self.queue2);
-                // in case the LRU would underflow, remove the last element
+                // in case the LRU would overflow, remove the last element
                 if self.lru.size == self.lru_capacity {
                     if let Some(record) = self.lru.pop_back() {
                         self.map.remove(&record.key);
@@ -87,7 +78,8 @@ impl<K: Clone + Eq + Hash, V> QCache<K, V> {
             if let Some(mut record) = self.queue1.pop_back() {
                 let last_key = record.key.clone();
                 record.rec_type = RecordType::Q2Elem;
-                let record_ptr = NonNull::new(Box::into_raw(Box::new(DLNode::new(record)))).unwrap();
+                let record_ptr =
+                    NonNull::new(Box::into_raw(Box::new(DLNode::new(record)))).unwrap();
                 self.insert_into_q2(record_ptr);
                 self.map.insert(last_key, record_ptr);
             }
@@ -96,10 +88,12 @@ impl<K: Clone + Eq + Hash, V> QCache<K, V> {
             rec_type: RecordType::Q1Elem,
             key: key.clone(),
             value,
-        })))).unwrap();
+        }))))
+        .unwrap();
         self.map.insert(key, new_record);
         unsafe {
-            self.queue1.insert_head(new_record.as_mut() as *mut DLNode<_>);
+            self.queue1
+                .insert_head(new_record.as_mut() as *mut DLNode<_>);
         }
         self.queue1.size += 1;
     }
@@ -117,7 +111,6 @@ impl<K: Clone + Eq + Hash, V> QCache<K, V> {
     }
 }
 
-
 #[cfg(test)]
 mod test {
     use super::QCache;
@@ -127,7 +120,7 @@ mod test {
         let mut qq = QCache::new(2, 2, 3);
         assert_eq!(qq.get(&1), None);
         for i in 1..5 {
-            qq.insert(i, 2*i);
+            qq.insert(i, 2 * i);
         }
         assert_eq!(qq.get(&3), Some(&6));
         assert_eq!(qq.get(&4), Some(&8));

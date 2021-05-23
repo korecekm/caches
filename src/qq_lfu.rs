@@ -1,10 +1,10 @@
+use crate::list::{DLList, DLNode};
 use std::collections::HashMap;
+#[cfg(test)]
+use std::fmt::Display;
 use std::hash::Hash;
 use std::mem::{self, MaybeUninit};
 use std::ptr::NonNull;
-use crate::list::{DLList, DLNode};
-#[cfg(test)]
-use std::fmt::Display;
 
 enum Record<K, V> {
     Q1Elem(NonNull<DLNode<(K, V)>>),
@@ -41,14 +41,10 @@ impl<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> QQLFUCache<K, V, LFU_CA
         match self.map.get(key) {
             Some(Record::Q1Elem(node_ptr)) => Some(
                 // calling this function is a necessary workaround
-                Self::get_value_from_q1_node(node_ptr.clone())
+                Self::get_value_from_q1_node(node_ptr.clone()),
             ),
-            Some(Record::Q2Elem(node_ptr)) => Some(
-                self.move_to_lfu(node_ptr.clone())
-            ),
-            Some(Record::LFUElem(idx, _)) => Some(
-                self.access_in_lfu(key, idx.clone())
-            ),
+            Some(Record::Q2Elem(node_ptr)) => Some(self.move_to_lfu(node_ptr.clone())),
+            Some(Record::LFUElem(idx, _)) => Some(self.access_in_lfu(key, idx.clone())),
             None => None,
         }
     }
@@ -57,15 +53,21 @@ impl<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> QQLFUCache<K, V, LFU_CA
         if self.queue1.size == self.q1_capacity {
             if let Some((evict_key, evict_value)) = self.queue1.pop_back() {
                 let last_key = evict_key.clone();
-                let record_ptr = NonNull::new(Box::into_raw(Box::new(DLNode::new((evict_key, evict_value))))).unwrap();
+                let record_ptr = NonNull::new(Box::into_raw(Box::new(DLNode::new((
+                    evict_key,
+                    evict_value,
+                )))))
+                .unwrap();
                 self.insert_into_q2(record_ptr);
                 self.map.insert(last_key, Record::Q2Elem(record_ptr));
             }
         }
-        let mut new_record = NonNull::new(Box::into_raw(Box::new(DLNode::new((key.clone(), value))))).unwrap();
+        let mut new_record =
+            NonNull::new(Box::into_raw(Box::new(DLNode::new((key.clone(), value))))).unwrap();
         self.map.insert(key, Record::Q1Elem(new_record));
         unsafe {
-            self.queue1.insert_head(new_record.as_mut() as *mut DLNode<_>);
+            self.queue1
+                .insert_head(new_record.as_mut() as *mut DLNode<_>);
         }
         self.queue1.size += 1;
     }
@@ -84,20 +86,17 @@ impl<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> QQLFUCache<K, V, LFU_CA
 
     /// 'extracts' a value reference from the given node pointer
     fn get_value_from_q1_node<'a>(node_ptr: NonNull<DLNode<(K, V)>>) -> &'a V
-        where K: 'a
+    where
+        K: 'a,
     {
-        let (_, ref val_ref) = unsafe {
-            &(*node_ptr.as_ptr()).elem
-        };
+        let (_, ref val_ref) = unsafe { &(*node_ptr.as_ptr()).elem };
         val_ref
     }
 
     /// Moves a record from the second queue to the LFU (on reaccess).
     /// Returns a reference to the value.
     fn move_to_lfu<'a>(&'a mut self, node_ptr: NonNull<DLNode<(K, V)>>) -> &'a V {
-        let mut node = unsafe {
-            Box::from_raw(node_ptr.as_ptr())
-        };
+        let mut node = unsafe { Box::from_raw(node_ptr.as_ptr()) };
         node.remove(&mut self.queue2);
 
         // move to the LFU:
@@ -105,7 +104,8 @@ impl<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> QQLFUCache<K, V, LFU_CA
         if self.lfu_size < LFU_CAPACITY {
             // the heap hasn't yet reached the capacity
             let heap_idx = self.insert_into_heap((key.clone(), 0));
-            self.map.insert(key.clone(), Record::LFUElem(heap_idx, value));
+            self.map
+                .insert(key.clone(), Record::LFUElem(heap_idx, value));
         } else {
             // eviction necessary
             let remove_key = unsafe { &(*(self.lfu_heap.as_ptr() as *mut (K, u32)).offset(0)).0 };
@@ -119,11 +119,14 @@ impl<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> QQLFUCache<K, V, LFU_CA
             }
             let mut heap_idx = 0;
             self.heap_bubble_down(&mut heap_idx);
-            self.map.insert(key.clone(), Record::LFUElem(heap_idx, value));
+            self.map
+                .insert(key.clone(), Record::LFUElem(heap_idx, value));
         }
         if let Record::LFUElem(_, val_ref) = self.map.get(&key).unwrap() {
             val_ref
-        } else { panic!("Unreachable."); }
+        } else {
+            panic!("Unreachable.");
+        }
     }
 
     /// Raises the freq counter of the LFU heap element at index $heap_idx and
@@ -134,7 +137,9 @@ impl<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> QQLFUCache<K, V, LFU_CA
         if let Some(Record::LFUElem(ref mut idx, ref val)) = self.map.get_mut(key) {
             *idx = heap_idx;
             val
-        } else { panic!("Unreachable"); }
+        } else {
+            panic!("Unreachable");
+        }
     }
 
     /// Insert a new element into the LFU heap and returns the index it gets.
@@ -195,14 +200,12 @@ impl<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> QQLFUCache<K, V, LFU_CA
     /// then moves 'up' in the heap, according to it's freq count, which is at
     /// that point 0)
     /// Freq counter at $heap_idx is expected to be at zero
-    fn heap_bubble_up(&mut self, heap_idx: &mut usize) {   
+    fn heap_bubble_up(&mut self, heap_idx: &mut usize) {
         if *heap_idx == 0 {
             return;
         }
         let parent_idx = (*heap_idx - 1) / 2;
-        let parent_freq = unsafe {
-            (*self.lfu_heap.as_ptr())[parent_idx].1
-        };
+        let parent_freq = unsafe { (*self.lfu_heap.as_ptr())[parent_idx].1 };
         if parent_freq > 0 {
             self.swap_in_heap(*heap_idx, parent_idx);
             *heap_idx = parent_idx;
@@ -213,20 +216,22 @@ impl<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> QQLFUCache<K, V, LFU_CA
     /// Swaps the two heap elements at given heap-array indices, also updating
     /// (just) the $swap_idx-es index in self.map
     fn swap_in_heap(&mut self, request_idx: usize, swap_idx: usize) {
-        let mut_heap = unsafe {
-            self.lfu_heap.as_mut_ptr().as_mut().unwrap()
-        };
+        let mut_heap = unsafe { self.lfu_heap.as_mut_ptr().as_mut().unwrap() };
         let swapped_elem = mut_heap[swap_idx].clone();
         if let Record::LFUElem(ref mut heap_idx, _) = self.map.get_mut(&swapped_elem.0).unwrap() {
             *heap_idx = request_idx;
-        } else { panic!("Unreachable"); }
+        } else {
+            panic!("Unreachable");
+        }
         mut_heap[swap_idx] = mem::replace(&mut mut_heap[request_idx], swapped_elem);
     }
 
     // May be useful for testing
     #[cfg(test)]
     fn print(&self)
-    where K: Display, V: Display
+    where
+        K: Display,
+        V: Display,
     {
         println!("QUEUE 1:");
         for elem in self.queue1.iter() {
@@ -237,9 +242,7 @@ impl<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> QQLFUCache<K, V, LFU_CA
             println!("({}, {})", elem.0, elem.1);
         }
         println!("LFU (size {}):", self.lfu_size);
-        let lfu_ref = unsafe {
-            &*self.lfu_heap.as_ptr()
-        };
+        let lfu_ref = unsafe { &*self.lfu_heap.as_ptr() };
         for i in 0..self.lfu_size {
             println!("({}, {})", lfu_ref[i].0, lfu_ref[i].1);
         }
@@ -261,16 +264,13 @@ impl<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> QQLFUCache<K, V, LFU_CA
         if heap_idx >= self.lfu_size {
             return;
         }
-        let current_freq = unsafe {
-            &(*self.lfu_heap.as_ptr())[heap_idx].1
-        };
+        let current_freq = unsafe { &(*self.lfu_heap.as_ptr())[heap_idx].1 };
         assert!(freq_bound <= current_freq);
 
         self.heap_check_recurse(2 * heap_idx + 1, current_freq);
         self.heap_check_recurse(2 * heap_idx + 2, current_freq);
     }
 }
-
 
 #[cfg(test)]
 mod test {
@@ -281,7 +281,7 @@ mod test {
         let mut cache = QQLFUCache::<_, _, 3>::new(2, 2);
         assert_eq!(cache.get(&1), None);
         for i in 1..5 {
-            cache.insert(i, 2*i);
+            cache.insert(i, 2 * i);
         }
         // records inside queue 1
         assert_eq!(cache.get(&3), Some(&6));
@@ -306,12 +306,10 @@ mod test {
         assert_eq!(cache.get(&7), Some(&14));
         assert_eq!(cache.get(&3), Some(&6));
         assert_eq!(cache.get(&8), Some(&16));
-        
+
         assert_eq!(cache.get(&5), None);
         let expect = [(7, 0), (3, 1), (8, 0)];
-        let mut lfu_iter = unsafe {
-            (*cache.lfu_heap.as_ptr()).iter()
-        };
+        let mut lfu_iter = unsafe { (*cache.lfu_heap.as_ptr()).iter() };
         for exp in expect.iter() {
             assert_eq!(lfu_iter.next().as_ref().unwrap(), &exp);
         }
@@ -325,7 +323,7 @@ mod test {
     fn heap_test() {
         let mut cache = QQLFUCache::<_, _, 100>::new(1, 1);
         cache.insert(100, 100);
-        cache.insert(200, 200);  // let's use 200 as filler to move values to q2
+        cache.insert(200, 200); // let's use 200 as filler to move values to q2
         cache.get(&100);
         assert_eq!(cache.get(&100), Some(&100));
         cache.check_heap_properties(1);
@@ -348,7 +346,7 @@ mod test {
             cache.insert(i, i);
             cache.check_heap_properties(100);
         }
-        
+
         cache.insert(0, 0);
         cache.insert(200, 200);
         cache.get(&0);

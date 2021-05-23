@@ -1,8 +1,8 @@
 use crate::list::{DLList, DLNode};
-use crate::trie_hashmap::{TrieMap, TMWriteTxn, TMReadTxn};
+use crate::trie_hashmap::{TMReadTxn, TMWriteTxn, TrieMap};
+use std::cell::Cell;
 use std::collections::hash_map::HashMap as StdMap;
 use std::hash::Hash;
-use std::cell::Cell;
 use std::mem;
 use std::ptr::NonNull;
 
@@ -18,48 +18,48 @@ use std::ptr::NonNull;
 // to be useful in the context of caches.
 
 /// A concurrently readable, transactional key-value cache.
-/// 
+///
 /// `LRUCache` itself works only as an immutable handle. Modifications to the
 /// cache need to be done via `LRUWriteTxn` write transactions and are only
 /// recorded once the transactions are committed (only one write transaction is
 /// allowed at a time).
-/// 
+///
 /// `LRUReadTxn` read transactions only give a snapshot to the current cached
 /// set, ie. to the values that are cached at the moment of the transaction's
 /// creation and don't modify the cache in any way, not even internally.
-/// 
+///
 /// As said, write transactions need to get committed to take effect globally.
 /// Their work may also be rolled back simply by having the txn handle dropped,
 /// although that's discouraged, as the next write transaction's creation may
 /// be expensive.
-/// 
+///
 /// ## Example:
 /// We will present, how a write transaction may function:
 /// ```
 /// // assume this name for the globally (potentially by several threads) used
 /// // cache
 /// let cache = LRUCache::new(32000);
-/// 
+///
 /// // ... arbitrary operation ...
-/// 
+///
 /// let mut write = cache.write();
 /// // a write transaction may also be created with try_write(), which returns
 /// // None if another write txn is already active. write() alone waits for the
 /// // active txn to finish
-/// 
+///
 /// // a cached value was successfully retrieved
 /// // unlike read transactions, write txn's get functions modify the cache
 /// // internally, giving the accessed element higher priority.
 /// assert!(write.get(&X).is_some());
-/// 
+///
 /// // another value isn't recorded and we wish to submit it for caching:
 /// assert!(write.get(&Y).is_none());
 /// write.insert(Y, Y_value);
-/// 
+///
 /// write.commit();
 /// // now, the modifications will be visible for new transaction handles
 /// ```
-/// 
+///
 /// Since read transactions aren't enabeld to affect the global cache, their
 /// threads may either count on some lookups being more expensive, or hold
 /// their own, smaller thread-local sequential caches, potentially committing
@@ -93,12 +93,8 @@ pub struct LRUWriteTxn<'a, K: Clone + Eq + Hash, V: Clone> {
     logic: *mut LRULogic<K>,
 }
 
-unsafe impl<K: Clone + Eq + Hash, V: Clone> Send for LRUCache<K, V>
-{
-}
-unsafe impl<K: Clone + Eq + Hash, V: Clone> Sync for LRUCache<K, V>
-{
-}
+unsafe impl<K: Clone + Eq + Hash, V: Clone> Send for LRUCache<K, V> {}
+unsafe impl<K: Clone + Eq + Hash, V: Clone> Sync for LRUCache<K, V> {}
 
 impl<K: Clone + Eq + Hash, V: Clone> LRUCache<K, V> {
     pub fn new(capacity: usize) -> Self {
@@ -140,9 +136,7 @@ impl<K: Clone + Eq + Hash, V: Clone> LRUCache<K, V> {
 
     pub fn try_write<'a>(&'a self) -> Option<LRUWriteTxn<'a, K, V>> {
         let write_attempt = self.map.try_write();
-        write_attempt.map(|txn| {
-            Self::prepare_write_txn(&self, txn)
-        })
+        write_attempt.map(|txn| Self::prepare_write_txn(&self, txn))
     }
 
     fn prepare_write_txn<'a>(&'a self, map_write: TMWriteTxn<'a, K, V>) -> LRUWriteTxn<'a, K, V> {
@@ -237,13 +231,10 @@ impl<K: Clone + Eq + Hash> LRULogic<K> {
         } else {
             None
         };
-        let mut node = NonNull::new(Box::into_raw(Box::new(
-            DLNode::new(key.clone())
-        ))).unwrap();
+        let mut node = NonNull::new(Box::into_raw(Box::new(DLNode::new(key.clone())))).unwrap();
         self.map.insert(key, node);
-        self.list.insert_head(unsafe {
-            node.as_mut() as *mut DLNode<_>
-        });
+        self.list
+            .insert_head(unsafe { node.as_mut() as *mut DLNode<_> });
         self.list.size += 1;
 
         remove_key
@@ -288,9 +279,7 @@ mod test {
         lru_write.commit();
         lru_write = lru.write();
         assert_eq!(lru_write.get(&2), None);
-        let produced_list = unsafe {
-            &mut (*lru_write.logic).list
-        };
+        let produced_list = unsafe { &mut (*lru_write.logic).list };
         assert_eq!(produced_list.size, 3);
         for i in [1, 3, 4].iter() {
             assert_eq!(produced_list.pop_back(), Some(*i));
@@ -314,7 +303,7 @@ mod test {
         for i in 0..3 {
             lru_write.as_mut().unwrap().insert(3 + i, 3 + i);
         }
-        lru_write = None;  // rollback
+        lru_write = None; // rollback
 
         rollback_check(&lru, 3, 0);
         for i in 0..3 {
