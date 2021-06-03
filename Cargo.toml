@@ -14,19 +14,9 @@ ahash = "0.6.2"
 criterion = "0.3"
 concread = { git = "https://github.com/kanidm/concread.git", rev = "72430fb42a56cf5dd6b4a0e5ce0bb62f607a6db1" }
 concache = "0.2.1"
+multiqueue = "0.3.2"
+
 
 [[bench]]
-name = "hashmaps_bench"
-harness = false
-[[bench]]
-name = "imitation"
-harness = false
-[[bench]]
-name = "imitation_miss_count"
-harness = false
-[[bench]]
-name = "transactional_cache"
-harness = false
-[[bench]]
-name = "qq_bench"
+name = "concurrent"
 harness = false
