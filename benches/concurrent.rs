@@ -47,7 +47,7 @@ const LOG_COUNT: usize = 2;
 const ACCESS_FILENAMES: [&str; LOG_COUNT] = ["output", "Carabas"];
 static mut ACCESSES: [*const Vec<u16>; LOG_COUNT] = [ptr::null(), ptr::null()];
 static mut UNIQUE_KEY_COUNT: [usize; LOG_COUNT] = [0, 0];
-const THREAD_COUNTS: [usize; 3] = [4, 8, 16, 24, 32];
+const THREAD_COUNTS: [usize; 5] = [4, 8, 16, 24, 32];
 
 static mut LRUS: *const Vec<LRU<u16, ()>> = ptr::null();
 static mut LRU_LOCK: *const Mutex<LRU<u16, ()>> = ptr::null();
@@ -274,8 +274,10 @@ pub fn lru_transactional(c: &mut Criterion) {
 }
 
 
+criterion_group!(divide, lru_divide);
 criterion_group!(lock, lru_lock);
-criterion_main!(lock);
+criterion_group!(transactional, lru_transactional);
+criterion_main!(divide, lock, transactional);
 
 
 fn prepare_data() {
