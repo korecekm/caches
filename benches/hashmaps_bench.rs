@@ -4,7 +4,7 @@
 // In addition, we perform the same operations on the std::collections::HashMap (other than commit)
 // just to see the comparison to the non-concurrent non-tree (and presumably well implemented) version.
 
-use caches::hash_map::HashMap as BPTHM;
+use caches::bptree_hash_map::HashMap as BPTHM;
 use caches::trie_hashmap::*;
 use concache::manual::Map as ConcacheMap;
 use criterion::*;
