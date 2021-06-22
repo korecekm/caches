@@ -49,7 +49,7 @@ macro_rules! perform_generic {
 macro_rules! perform_2Q {
     ($writefile:expr, $($capacity:expr),*) => {
         $(
-            let mut cache = QQ::<u16, ()>::new(10, 50, { $capacity - 60 });
+            let mut cache = QQ::<u16, ()>::new(10, { $capacity / 6 }, { $capacity - ($capacity / 6) - 10 });
             write!($writefile, " {}", iterate_accesses!(cache)).unwrap();
         )*
         writeln!($writefile, "").unwrap();
@@ -59,7 +59,7 @@ macro_rules! perform_2Q {
 macro_rules! perform_2Q_LFU {
     ($writefile:expr, $($capacity:expr),*) => {
         $(
-            let mut cache = QQLFU::<u16, (), { $capacity - 60 }>::new(10, 50);
+            let mut cache = QQLFU::<u16, (), { $capacity - ($capacity / 5 * 2)}>::new($capacity / 5, $capacity / 5);
             write!($writefile, " {}", iterate_accesses!(cache)).unwrap();
         )*
         writeln!($writefile, "").unwrap();
