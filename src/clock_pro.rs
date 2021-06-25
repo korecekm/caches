@@ -62,8 +62,8 @@ struct Node<K, V> {
     prev: *const Node<K, V>,
     next: *const Node<K, V>,
     key: K,
-    // The record may be non-resident, therefore Option
-    val: Option<Box<V>>,
+    // The record may be non-resident, in which case it is null
+    val: *const V,
     // Flags by lsb index:
     // 0: hot
     // 1: referenced (when a record gets reaccessed)
@@ -82,7 +82,7 @@ pub struct CLOCKProCache<K: Clone + Eq + Hash, V> {
     hot_count: usize,
     resident_cold_count: usize,
     nonresident_cold_count: usize,
-    // hand_cold is only None when the cache is empty
+    // hand_cold is only null when the cache is empty
     hand_cold: *const Node<K, V>,
     hand_hot: *const Node<K, V>,
     hand_test: *const Node<K, V>,
@@ -95,7 +95,7 @@ impl<K, V> Node<K, V> {
             prev: ptr::null(),
             next: ptr::null(),
             key,
-            val: Some(Box::new(value)),
+            val: Box::into_raw(Box::new(value)),
             // Flags for cold record in its test period
             flags: 0b100,
         }
@@ -140,7 +140,7 @@ impl<K, V> Node<K, V> {
 
     /// Does this node also hold the value for its key?
     fn is_resident(&self) -> bool {
-        self.val.is_some()
+        !self.val.is_null()
     }
 
     /// Is the record in its test period?
@@ -204,6 +204,19 @@ impl<K: Clone + Eq + Hash, V> CLOCKProCache<K, V> {
 
     /// Returns a reference to the value for given key, if it is cached.
     pub fn get<'a>(&'a mut self, key: &K) -> Option<&'a V> {
+        self.get_value_ptr(key).map(|val_ptr| unsafe { &*val_ptr })
+    }
+
+    /// Returns a mutable reference to the value for given key, if it is cached.
+    pub fn get_mut<'a>(&'a mut self, key: &K) -> Option<&'a mut V> {
+        self.get_value_ptr(key)
+            .map(|val_ptr| unsafe { &mut *(val_ptr as *mut V) })
+    }
+
+    /// A generic function that tries retrieving the ptr in which we store the
+    /// value for received key (also performing a cache hit in case it's
+    /// present).
+    fn get_value_ptr(&mut self, key: &K) -> Option<*const V> {
         if let Some(node_ptr) = self.map.get(key) {
             let node_mut = unsafe { &mut *(*node_ptr as *mut Node<K, V>) };
             // The first reaccess makes cold_capacity increase
@@ -212,12 +225,12 @@ impl<K: Clone + Eq + Hash, V> CLOCKProCache<K, V> {
             }
             // On reaccess, we only mark the record as referenced
             node_mut.set_referenced(true);
-            if let Some(boxed_val) = &node_mut.val {
-                // Resident record
-                Some(&*boxed_val)
-            } else {
+            if node_mut.val.is_null() {
                 // Non-resident record
                 None
+            } else {
+                // Resident record
+                Some(node_mut.val)
             }
         } else {
             // No record for given key
@@ -253,7 +266,7 @@ impl<K: Clone + Eq + Hash, V> CLOCKProCache<K, V> {
 
         // Now either insert a new record, or reinsert the found one as hot
         if let Some(node) = record {
-            node.val = Some(Box::new(value));
+            node.val = Box::into_raw(Box::new(value));
             self.reinsert_as_hot(node);
             self.hot_count += 1;
         } else {
@@ -350,7 +363,7 @@ impl<K: Clone + Eq + Hash, V> CLOCKProCache<K, V> {
                 if self.nonresident_cold_count >= self.capacity {
                     self.trigger_hand_test();
                 }
-                hand.val = None;
+                hand.val = ptr::null();
                 self.resident_cold_count -= 1;
                 self.nonresident_cold_count += 1;
                 evicted = true;
@@ -465,7 +478,7 @@ impl<K: Clone + Eq + Hash, V> CLOCKProCache<K, V> {
 
     /// Moving `hand_test`, this removes the first non-resident cold record it
     /// finds, ending test periods of cold records along the way.
-    /// It leaves `hand_test` on any type of records that's in line.
+    /// It leaves `hand_test` on any type of record that's in line.
     fn trigger_hand_test(&mut self) {
         // If hand_test is uninitiated, initiate it:
         if self.hand_test.is_null() {
@@ -528,6 +541,14 @@ impl<K: Clone + Eq + Hash, V> CLOCKProCache<K, V> {
     fn decrement_cold_capacity(&mut self) {
         if self.cold_capacity > 2 {
             self.cold_capacity -= 1;
+        }
+    }
+}
+
+impl<K, V> Drop for Node<K, V> {
+    fn drop(&mut self) {
+        unsafe {
+            Box::from_raw(self.val as *mut V);
         }
     }
 }
@@ -664,6 +685,49 @@ mod test {
                 (15, false, true),
             ],
         );
+    }
+
+    #[test]
+    fn get_mut_simple() {
+        // A basic test to check if get_mut works how one would expect
+        let mut cache = CLOCKProCache::new(6);
+        for i in 0..6 {
+            cache.insert(i, 2 * i);
+        }
+        let elem = cache.get_mut(&0).unwrap();
+        assert_eq!(*elem, 0);
+        *elem = 50;
+        assert_eq!(cache.get(&4), Some(&8));
+        *cache.get_mut(&2).unwrap() = 100;
+        cache.insert(6, 12);
+        check_clock_content(
+            &cache,
+            vec![
+                (2, false, true),
+                (3, false, true),
+                (4, false, true),
+                (5, false, true),
+                (6, false, true),
+                (0, true, true),
+                (1, false, false),
+            ],
+        );
+        cache.insert(7, 14);
+        assert_eq!(cache.get(&0), Some(&50));
+        check_clock_content(
+            &cache,
+            vec![
+                (4, false, true),
+                (5, false, true),
+                (6, false, true),
+                (2, true, true),
+                (7, false, true),
+                (0, true, true),
+                (1, false, false),
+                (3, false, false),
+            ],
+        );
+        assert_eq!(cache.get(&2), Some(&100));
     }
 
     /// Checks that the constents of the cache's linked list are what we expect.
