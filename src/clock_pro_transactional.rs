@@ -1,9 +1,9 @@
 use crate::trie_hashmap::{TMReadTxn, TMWriteTxn, TrieMap};
-use std::hash::Hash;
-use std::collections::hash_map::HashMap as StdMap;
 use std::cell::Cell;
-use std::ptr;
+use std::collections::hash_map::HashMap as StdMap;
+use std::hash::Hash;
 use std::mem;
+use std::ptr;
 
 // A transactional CLOCK-Pro cache that gives read transactions no way of
 // modifying the cache's content. Write transactions store all the CLOCK-Pro
@@ -27,59 +27,59 @@ use std::mem;
 // the standard CLOCK-Pro implementation (file `clock_pro.rs`).
 
 /// # CLOCK-Pro Transactional
-/// 
-/// A concurrently readably, transactional key-value cache
+///
+/// A concurrently readable, transactional key-value cache
 /// (using CLOCK-Pro eviction logic).
-/// 
+///
 /// `CLOCKProTransactional` itself works only as an immutable handle.
 /// Modifications to the cache need to be done via `CLOCKProWriteTxn` write
 /// transactions, obtained from the handle by the `write` method, and they are
 /// only recorded globally once the transactions are committed (only a single
 /// write transaction is allowed at one time).
-/// 
+///
 /// The `read` method on the `CLOCKProTransactional` handle allows generation
 /// of an arbitrary number of `LRUReadTxn` read transactions. Those merely give
 /// a snapshot to the current cached set, ie. to the values that are cached at
 /// the moment of the transaction's creation. Accesses to these transactions
 /// don't modify the cache in any way.
-/// 
+///
 /// As stated, write transactions need to get committed (using their `commit`
 /// method) to take effect globally. Their progress may also be rolled back
 /// (forgotten) simply by having the transaction handle dropped, although
 /// this is discouraged, as the next write transaction's creation may be
 /// expensive.
-/// 
+///
 /// ## Example usage
 /// We will show an example usage of a write transaction:
 /// ```
 /// // We will call the globall cache handle simply 'cache'
 /// let cache = CLOCKProTransactional::new(32000);
-/// 
+///
 /// // ... let's imagine the cache is supplied with records here by another
 /// // write transaction, which is now committed ...
-/// 
+///
 /// // Acquire a write transaction:
 /// let mut cache_write = cache.write();
 /// // a write transaction may also be created with try_write(), which returns
 /// // None if another write txn is already active. write() alone waits for the
 /// // active txn to finish.
-/// 
+///
 /// // A cached value is successfully retrieved.
 /// // Unlike read transactions, write txn's get function modifies the cache
 /// // internally, giving the accessed element higher priority in being kept.
 /// assert!(write.get(&X).is_some());
-/// 
+///
 /// // Another value isn't recorded and we wish to submit it for caching:
 /// assert!(write.get(&Y).is_none());
 /// write.insert(Y, Y_value);
-/// 
+///
 /// write.commit();
 /// // Now, the modifications will be visible to new transactions.
 /// // If the `write` handle was dropped, they would get rolled back.
 /// ```
 pub struct CLOCKProTransactional<K: Clone + Eq + Hash, V: Clone> {
     capacity: usize,
-    map:TrieMap<K, V>,
+    map: TrieMap<K, V>,
     // the logic fields are only accessed if a write txn for the map was
     // successfully received, ie. the map itself protects the struct against
     // concurrent rewrites.
@@ -141,7 +141,7 @@ impl<K: Clone + Eq + Hash, V: Clone> CLOCKProTransactional<K, V> {
     /// transactions holding different versions of the cache, all the values
     /// they hold will need to be kept in memory.
     pub fn new(capacity: usize) -> Self {
-        Self{
+        Self {
             capacity,
             map: TrieMap::new(),
             logic_valid: Cell::new(true),
@@ -174,19 +174,17 @@ impl<K: Clone + Eq + Hash, V: Clone> CLOCKProTransactional<K, V> {
                 }
             }
         }
-        self.logic.set(Box::into_raw(Box::new(
-            CLOCKProLogic {
-                capacity: self.capacity,
-                cold_capacity: self.capacity - 2,
-                map,
-                hot_count: 0,
-                resident_cold_count: key_count,
-                nonresident_cold_count: 0,
-                hand_cold,
-                hand_hot: ptr::null(),
-                hand_test: ptr::null(),
-            }
-        )));
+        self.logic.set(Box::into_raw(Box::new(CLOCKProLogic {
+            capacity: self.capacity,
+            cold_capacity: self.capacity - 2,
+            map,
+            hot_count: 0,
+            resident_cold_count: key_count,
+            nonresident_cold_count: 0,
+            hand_cold,
+            hand_hot: ptr::null(),
+            hand_test: ptr::null(),
+        })));
     }
 
     /// Acquire a read transaction to this cache
@@ -210,7 +208,10 @@ impl<K: Clone + Eq + Hash, V: Clone> CLOCKProTransactional<K, V> {
 
     /// Once a write transaction to the (trie) map has been acquired, this
     /// function prepares the write transaction for our cache.
-    fn prepare_write_txn<'a>(&'a self, map_write: TMWriteTxn<'a, K, V>) -> CLOCKProWriteTxn<'a, K, V> {
+    fn prepare_write_txn<'a>(
+        &'a self,
+        map_write: TMWriteTxn<'a, K, V>,
+    ) -> CLOCKProWriteTxn<'a, K, V> {
         if !self.logic_valid.get() {
             // A previous write transaction was rolled back, invalidating the
             // logic structure.
@@ -271,9 +272,7 @@ impl<K: Clone + Eq + Hash, V: Clone> CLOCKProWriteTxn<'_, K, V> {
     /// This function enables modifications to the present values.
     /// Only call this if the record *is* already present in the cache.
     pub fn reinsert(&mut self, key: K, value: V) {
-        unsafe {
-            (*self.logic).hit(&key)
-        }
+        unsafe { (*self.logic).hit(&key) }
         self.map.as_mut().unwrap().update(key, value);
     }
 }
@@ -409,9 +408,7 @@ impl<K: Clone + Eq + Hash> CLOCKProLogic<K> {
         // If the key is present in a non-resident record, we reinsert it as a
         // hot record.
         let record = if let Some(nonresident_ptr) = self.map.get(&key) {
-            let node = unsafe {
-                &mut *(*nonresident_ptr as *mut Node<K>)
-            };
+            let node = unsafe { &mut *(*nonresident_ptr as *mut Node<K>) };
             debug_assert!(!node.is_hot());
             debug_assert!(!node.is_resident());
             // If moving this record would also move hand_test, just move it
@@ -448,9 +445,7 @@ impl<K: Clone + Eq + Hash> CLOCKProLogic<K> {
     /// Update the CLOCK-Pro state on a reaccess.
     fn hit(&mut self, key: &K) {
         if let Some(node_ptr) = self.map.get(key) {
-            let node_mut = unsafe {
-                &mut *(*node_ptr as *mut Node<K>)
-            };
+            let node_mut = unsafe { &mut *(*node_ptr as *mut Node<K>) };
             // The first reaccess makes cold_capacity increase
             if node_mut.check_cold_reaccess() {
                 self.increment_cold_capacity();
@@ -530,9 +525,7 @@ impl<K: Clone + Eq + Hash> CLOCKProLogic<K> {
         let mut evict_key = None;
         // Prepare a mutable reference to the record the hand points to, for
         // convenience.
-        let hand = unsafe {
-            &mut *(self.hand_cold as *mut Node<K>)
-        };
+        let hand = unsafe { &mut *(self.hand_cold as *mut Node<K>) };
         debug_assert!(!hand.is_hot());
         debug_assert!(hand.is_resident());
         if hand.is_test() {
@@ -573,9 +566,7 @@ impl<K: Clone + Eq + Hash> CLOCKProLogic<K> {
                 // Remove from linked list
                 hand.remove();
                 // Free node and set the evict_key
-                evict_key = unsafe {
-                    Some((*Box::from_raw(hand)).key)
-                };
+                evict_key = unsafe { Some((*Box::from_raw(hand)).key) };
                 self.resident_cold_count -= 1;
             }
         }
@@ -762,13 +753,9 @@ impl<'a, K: Clone + Eq + Hash, V: Clone> Drop for CLOCKProWriteTxn<'_, K, V> {
 impl<K: Clone + Eq + Hash> Drop for CLOCKProLogic<K> {
     fn drop(&mut self) {
         if !self.hand_cold.is_null() {
-            let mut current_ptr = unsafe {
-                (*Box::from_raw(self.hand_cold as *mut Node<K>)).next
-            };
+            let mut current_ptr = unsafe { (*Box::from_raw(self.hand_cold as *mut Node<K>)).next };
             while current_ptr != self.hand_cold {
-                current_ptr = unsafe {
-                    (*Box::from_raw(current_ptr as *mut Node<K>)).next
-                };
+                current_ptr = unsafe { (*Box::from_raw(current_ptr as *mut Node<K>)).next };
             }
         }
     }
@@ -776,7 +763,7 @@ impl<K: Clone + Eq + Hash> Drop for CLOCKProLogic<K> {
 
 #[cfg(test)]
 mod test {
-    use super::{CLOCKProTransactional, CLOCKProLogic, Node};
+    use super::{CLOCKProLogic, CLOCKProTransactional, Node};
     use rand::{thread_rng, Rng};
     use std::fmt::{Debug, Display};
     use std::hash::Hash;
@@ -928,9 +915,7 @@ mod test {
     where
         K: Clone + Eq + Hash + Debug + Display,
     {
-        let mut current = unsafe {
-            &*cache_logic.hand_cold
-        };
+        let mut current = unsafe { &*cache_logic.hand_cold };
         let mut expect_hot_count = 0;
         let mut expect_resident_cold_count = 0;
         let mut expect_nonresident_cold_count = 0;
@@ -959,15 +944,16 @@ mod test {
             assert_eq!(current.is_hot(), exp_hot);
             assert_eq!(current.is_resident(), exp_resident);
             // Move forward in the list:
-            current = unsafe {
-                &*current.next
-            };
+            current = unsafe { &*current.next };
         }
         // We must have circled back to `hand_cold`
         assert_eq!(current as *const Node<K>, cache_logic.hand_cold);
         assert_eq!(cache_logic.hot_count, expect_hot_count);
         assert_eq!(cache_logic.resident_cold_count, expect_resident_cold_count);
-        assert_eq!(cache_logic.nonresident_cold_count, expect_nonresident_cold_count);
+        assert_eq!(
+            cache_logic.nonresident_cold_count,
+            expect_nonresident_cold_count
+        );
     }
 
     #[test]
