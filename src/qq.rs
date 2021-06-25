@@ -41,7 +41,10 @@ impl<K: Clone + Eq + Hash, V> QCache<K, V> {
 
     pub fn get<'a>(&'a mut self, key: &K) -> Option<&'a V> {
         match self.map.get(key) {
-            Some(node_ptr) => Some(self.access(node_ptr.clone())),
+            Some(node_ptr) => {
+                let node_ptr = node_ptr.clone();
+                Some(self.access(node_ptr))
+            }
             None => None,
         }
     }
