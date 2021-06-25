@@ -30,7 +30,7 @@ macro_rules! hash_choice {
         let mut hasher = AHasher::new_with_keys(3, 7);
         $key.hash(&mut hasher);
         let divisor = u64::MAX / $cache_count as u64;
-        (hasher.finish(generate_mut_guard) / divisor) as usize
+        (hasher.finish() / divisor) as usize
     }};
 }
 

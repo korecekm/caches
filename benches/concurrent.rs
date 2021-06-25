@@ -1,310 +1,470 @@
 extern crate multiqueue;
-use caches::lru::LRUCache as LRU;
-use caches::lru_transactional::LRUCache as LRUTransactional;
+use caches::clock_pro::CLOCKProCache as Cache;
+use caches::list::DLList;
+use caches::clock_pro_associative::CLOCKProAssociative as CacheAssoc;
+use caches::clock_pro_transactional::CLOCKProTransactional as CacheTxnal;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::sync::Mutex;
-use criterion::*;
 use std::ptr;
+use criterion::*;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use ahash::AHasher;
-use std::hash::Hash;
-use std::hash::Hasher;
 
-// This benchmark tests the concurrent scalability of caching DSes (currently
-// only LRU variants). For that, it always works with caches of enough capacity
-// to hold the whole dataset, ie. it really only measures the overhead of the
-// replacement logic and of the concurrency strategy - there are three
-// benchmarked strategies:
-// * "DIVIDE": Each thread has its own cache and its own stream of keys to
-//   query; a "query scheduler" must be employed to distribute the keys between
-//   the threads - it does so by hashing the keys and divides the hashes into
-//   uniformly large "buckets". This way, each cache always works with 'its own'
-//   key subset (in the case ). This behavior aims to simulate random
-//   distribution of keys between threads.
-// * "LOCK": There is just one 'large' cache behind a mutex, which each thread
-//   has to lock to be able to use the cache. The threads take the queries from
-//   a single SPMC queue whenever they are done with their last query.
-// * "TRANSACTIONAL": we have a transactional cache and the working threads use
-//   a read transaction to access it. They refresh this transaction after a set
-//   number of queries, READ_TXN_RENEW_RATE, which is to simulate an imagined
-//   behavior with the transactional approach, where just one thread has write
-//   privilege and the others need to refresh regularly. As with the LOCK
-//   approach, the workload is distributed via an SPMC queue.
+// CODE UNDER CONSTRUCTION
 // 
-// In all three cases, the cache(s) is first filled with all the values that are
-// about to be queried, so that we only measure succesfull read behavior.
+// # Current behavior:
 // 
-// Implementation-wise, the datasets are taken from files of our specific
-// format, located in the access_logs directory. These logs are transferred
-// into RAM (specifically, ACCESSES) via the prepare_data function before we
-// start measuring and stay there until all measurements are finished and the
-// benchmarking processes heap is freed.
+// We only benchmark based on the one access log we have that actually specifies transaction IDs,
+// which is the one provided by Mr. Carabas.
+// 
+// The file is first pulled into our WORKLOAD vector by the `prepare_data` function. Then the
+// benchmarks themselves take place. The Criterion benchmark functions are the ones with the
+// '_bench' suffix. Those run multiple threads that perform the transactions in the WORKLOAD.
+// The code that's performed is in the macros with the 'perform_' prefix. Those take thair tasks
+// from an spmc channel that actually sends indexes in the WORKLOAD Vec, not the Transaction
+// structs themselves.
 
-// THIS CODE IS STILL UNDER CONSTRUCTION. It is not very readable at this stage.
+const WORKLOAD_FILENAME: &str = "Carabas";
+static mut WORKLOAD: *const Vec<Transaction<u16>> = ptr::null();
+const CACHE_SIZE_TOTAL: usize = 4224;
+const THREAD_COUNTS: [usize; 1] = [2];
 
-const LOG_COUNT: usize = 2;
-const ACCESS_FILENAMES: [&str; LOG_COUNT] = ["output", "Carabas"];
-static mut ACCESSES: [*const Vec<u16>; LOG_COUNT] = [ptr::null(), ptr::null()];
-static mut UNIQUE_KEY_COUNT: [usize; LOG_COUNT] = [0, 0];
-const THREAD_COUNTS: [usize; 5] = [4, 8, 16, 24, 32];
+static mut CACHE_LOCK: *const Mutex<Cache<u16, ()>> = ptr::null();
+static mut CACHE_ASSOCIATIVE: *const CacheAssoc<u16, ()> = ptr::null();
+static mut CACHE_TRANSACTIONAL: *const CacheTxnal<u16, ()> = ptr::null();
 
-static mut LRUS: *const Vec<LRU<u16, ()>> = ptr::null();
-static mut LRU_LOCK: *const Mutex<LRU<u16, ()>> = ptr::null();
-static mut LRU_TRANSACTIONAL: *const LRUTransactional<u16, ()> = ptr::null();
-
-macro_rules! hash_choice {
-    ($key:expr, $cache_count:expr) => {{
-        let mut hasher = AHasher::new_with_keys(3, 7);
-        $key.hash(&mut hasher);
-        let divisor = u64::MAX / $cache_count as u64;
-        (hasher.finish() / divisor) as usize
-    }}
-}
-
-macro_rules! work_divide {
-    ($caches:expr, $cache_type:ty, $idx:expr, $query_stream:expr) => {
-        for key in $query_stream {
-            assert!(unsafe {
-                (*($caches as *mut Vec<$cache_type>))[$idx].get(&key).is_some()
-            });
+// A macro to occupy any cache with a proper general get and insert function
+// with the keys in our workload.
+// We use this to initiate the caches, so that the benchmarks run on caches
+// that already have a working cached set.
+macro_rules! fill_generic {
+    ($cache:expr) => {
+        for txn in unsafe { (*WORKLOAD).iter() } {
+            let key_vec = match txn {
+                Transaction::Search(st) => &st.key_vec,
+                Transaction::Modify(mt) => &mt.key_vec,
+            };
+            for key in key_vec.iter() {
+                if $cache.get(key).is_none() {
+                    $cache.insert(*key, ());
+                }
+            }
         }
     };
 }
 
-macro_rules! work_lock {
-    ($cache:expr, $query_stream:expr) => {
-        for key in $query_stream {
-            assert!(unsafe {
-                (*$cache).lock().unwrap().get(&key).is_some()
-            });
+macro_rules! perform_lock {
+    ($query_stream:expr) => {
+        for txn_idx in $query_stream {
+            let mut cache_guard = unsafe {
+                (*CACHE_LOCK).lock().unwrap()
+            };
+            // Performance-wise, the CLOCK-Pro acts the same for both `get` and
+            // `get_mut`. So we may just use get at all times (the whole cache
+            for uid in unsafe { (*WORKLOAD)[txn_idx as usize].iter_keys() } {
+                if (*cache_guard).get(uid).is_none() {
+                    (*cache_guard).insert(*uid, ());
+                }
+            }
         }
     };
 }
 
-const READ_TXN_RENEW_RATE: usize = 40;
-macro_rules! work_transactional {
-    ($cache:expr, $query_stream:expr) => {
-        let mut read_txn = unsafe {
-            (*$cache).read()
+macro_rules! perform_assoc {
+    ($query_stream:expr) => {
+        for txn_idx in $query_stream {
+            // Performance-wise, the CLOCK-Pro acts the same for both `get` and
+            // `get_mut`. So we may just use get at all times (the necessary
+            // cache slots are locked, so a simple `get` is a valid mutation
+            // simulation.
+            let key_vec = match unsafe { &(*WORKLOAD)[txn_idx as usize] } {
+                Transaction::Search(st) => &st.key_vec,
+                Transaction::Modify(mt) => &mt.key_vec,
+            };
+            let mut cache_guard = unsafe {
+                (*CACHE_ASSOCIATIVE).generate_mut_guard(key_vec)
+            };
+            for uid in key_vec.iter() {
+                if cache_guard.get(uid).is_none() {
+                    cache_guard.insert(*uid, ());
+                }
+            }
+        }
+    };
+}
+
+// Macro that takes care of a transaction at `txn_idx` of our WORKLOAD, using a
+// write transaction.
+macro_rules! txnal_write {
+    ($txn_idx:expr, $hit_list:expr) => {
+        let mut write = unsafe {
+            (*CACHE_TRANSACTIONAL).write()
         };
-        let mut idx = 0;
-        for key in $query_stream {
-            if idx == READ_TXN_RENEW_RATE {
-                idx = 0;
-                read_txn = unsafe {
-                    (*$cache).read()
+        // Hit all records that couldn't have been hit with only the read txn
+        while let Some(key) = $hit_list.pop_back() {
+            write.get(&key);
+        }
+        // Perform given transaction
+        match unsafe { &(*WORKLOAD)[$txn_idx as usize] } {
+            Transaction::Search(st) => {
+                for uid in st.key_vec.iter() {
+                    if write.get(uid).is_none() {
+                        write.insert(*uid, ());
+                    }
                 }
             }
-            assert!(read_txn.get(&key).is_some());
-            idx += 1;
+            Transaction::Modify(mt) => {
+                for i in 0..mt.key_vec.len() {
+                    let uid = mt.key_vec[i];
+                    if write.get(&uid).is_none() {
+                        write.insert(uid, ());
+                    } else if mt.mod_vec[i] {
+                        write.reinsert(uid, ());
+                    }
+                }
+            }
+        }
+        write.commit();
+    };
+}
+
+macro_rules! perform_txnal {
+    ($query_stream:expr) => {
+        // When only using a read txn, 
+        let mut hit_list = DLList::new();
+        for txn_idx in $query_stream {
+            // Too many cache hits went unmarked globally, we take a write
+            // transaction now to perform the cache hits.
+            if hit_list.size > 400 {
+                txnal_write!(txn_idx, &mut hit_list);
+                continue;
+            }
+            let txn = unsafe { &(*WORKLOAD)[txn_idx as usize] };
+            if txn.does_modify() {
+                txnal_write!(txn_idx, &mut hit_list);
+            } else {
+                // Transaction that only performs reads
+                let read = unsafe {
+                    (*CACHE_TRANSACTIONAL).read()
+                };
+                for uid in txn.iter_keys() {
+                    if read.get(uid).is_none() {
+                        // Key not present in the cache's read snapshot. We
+                        // need a cache write transaction for this.
+                        txnal_write!(txn_idx, &mut hit_list);
+                        break;
+                    }
+                }
+                // The transaction was successful, so we record all the cache
+                // hits (to mark them globally once we get the write privilege)
+                for uid in txn.iter_keys() {
+                    hit_list.push_front(*uid);
+                }
+            }
         }
     };
 }
 
-
-pub fn lru_divide(c: &mut Criterion) {
+/// The LOCK benchmark function.
+pub fn lock_bench(c: &mut Criterion) {
+    // Prepare the workload into our WORKLOAD Vec
     prepare_data();
-    let mut group = c.benchmark_group("LRU-divide");
+    // Prepare the benchmark group
+    let mut group = c.benchmark_group("LOCK");
     group.sample_size(10);
 
-    for i in 0..LOG_COUNT {
-        for thread_count in THREAD_COUNTS.iter() {
-            unsafe {
-                LRUS = Box::into_raw(Box::new(Vec::new()));
-                for _ in 0..*thread_count {
-                    (*(LRUS as *mut Vec<LRU<u16, ()>>)).push(LRU::new(UNIQUE_KEY_COUNT[i]));
-                }
-                for j in 0..UNIQUE_KEY_COUNT[i] {
-                    (*(LRUS as *mut Vec<LRU<u16, ()>>))[hash_choice!(j, *thread_count)].insert(j as u16, ());
-                }
-            }
-            group.bench_with_input(
-                BenchmarkId::from_parameter(format!("{}/{}", ACCESS_FILENAMES[i], thread_count)),
-                thread_count,
-                |b, &threads| {
-                    b.iter_custom(|iters| {
-                        let mut duration = Duration::from_micros(0);
-                        for _ in 0..iters {
-                            let mut sends = Vec::new();
-                            let mut handles = Vec::new();
-                            for t in 0..threads {
-                                let (send, recv) = multiqueue::broadcast_queue(unsafe { (*ACCESSES[i]).len() as u64 } );
-                                sends.push(send);
-                                let consumer_stream = recv.add_stream();
-                                let join_handle = std::thread::spawn(move || {
-                                    work_divide!(LRUS, LRU<u16, ()>, t, consumer_stream);
-                                });
-                                handles.push(join_handle);
-                                recv.unsubscribe();
-                            }
-
-                            let start = Instant::now();
-                            for a in unsafe { (*ACCESSES[i]).iter() } {
-                                sends[hash_choice!(a, threads)].try_send(*a).unwrap();
-                            }
-                            for send in sends {
-                                drop(send);
-                            }
-
-                            for handle in handles {
-                                handle.join().unwrap();
-                            }
-                            duration += start.elapsed()
+    // Prepare the cache for the threads to access.
+    let mut cache = Cache::new(CACHE_SIZE_TOTAL);
+    fill_generic!(cache);
+    unsafe {
+        CACHE_LOCK = Box::into_raw(Box::new(Mutex::new(cache)));
+    }
+    // Perform the benchmark one by one for all chosen thread counts.
+    for thread_count in THREAD_COUNTS.iter() {
+        group.bench_with_input(
+            BenchmarkId::from_parameter(thread_count),
+            thread_count,
+            |b, thread_count| {
+                b.iter_custom(|iters| {
+                    let mut duration = Duration::from_micros(0);
+                    for _ in 0..iters {
+                        // First, prepare the broadcast queue to send the
+                        // workload through
+                        let workload_size = unsafe { (*WORKLOAD).len() };
+                        let (send, recv) = multiqueue::broadcast_queue(workload_size as u64);
+                        let consumer_stream = recv.add_stream();
+                        let mut handles = Vec::new();
+                        for _ in 0..*thread_count {
+                            let stream = consumer_stream.clone();
+                            let join_handle = std::thread::spawn(move || {
+                                perform_lock!(stream);
+                            });
+                            handles.push(join_handle);
                         }
-                        duration
-                    })
-                }
-            );
-            unsafe {
-                Box::from_raw(LRUS as *mut Vec<LRU<u16, ()>>);
+                        recv.unsubscribe();
+
+                        // We only start measuring the time once we send requests
+                        let start = Instant::now();
+                        for txn_idx in 0..workload_size {
+                            send.try_send(txn_idx as u16).unwrap();
+                        }
+                        // Stop the broadcast
+                        drop(send);
+
+                        for handle in handles {
+                            handle.join().unwrap();
+                        }
+                        // The duration from this iteration gets added to the
+                        // sum for this `iters` count
+                        duration += start.elapsed();
+                    }
+                    duration
+                })
             }
+        );
+    }
+    // Free the cache
+    unsafe {
+        Box::from_raw(CACHE_LOCK as *mut Mutex<Cache<u16, ()>>);
+    }
+}
+
+pub fn associative_bench(c: &mut Criterion) {
+    // Prepare the workload into our WORKLOAD Vec
+    prepare_data();
+    // Prepare the benchmark group
+    let mut group = c.benchmark_group("ASSOCIATIVE");
+    group.sample_size(10);
+
+    // Perform the benchmark one by one for all chosen thread counts.
+    for thread_count in THREAD_COUNTS.iter() {
+        // Prepare the cache
+        let cache = CacheAssoc::new(CACHE_SIZE_TOTAL, thread_count * 4);
+        let mut unique_guard = cache.generate_unique_access_guard();
+        fill_generic!(unique_guard);
+        drop(unique_guard);
+        unsafe {
+            CACHE_ASSOCIATIVE = Box::into_raw(Box::new(cache));
+        }
+        // The bench function itself:
+        group.bench_with_input(
+            BenchmarkId::from_parameter(thread_count),
+            thread_count,
+            |b, thread_count| {
+                b.iter_custom(|iters| {
+                    let mut duration = Duration::from_micros(0);
+                    for _ in 0..iters {
+                        // First, prepare the broadcast queue to send the workload through
+                        let workload_size = unsafe { (*WORKLOAD).len() };
+                        let (send, recv) = multiqueue::broadcast_queue(workload_size as u64);
+                        let consumer_stream = recv.add_stream();
+                        let mut handles = Vec::new();
+                        for _ in 0..*thread_count {
+                            let stream = consumer_stream.clone();
+                            let join_handle = std::thread::spawn(move || {
+                                perform_assoc!(stream);
+                            });
+                            handles.push(join_handle);
+                        }
+                        recv.unsubscribe();
+
+                        // We only start measuring the time once we send requests
+                        let start = Instant::now();
+                        for txn_idx in 0..workload_size {
+                            send.try_send(txn_idx as u16).unwrap();
+                        }
+                        // Stop the broadcast
+                        drop(send);
+
+                        for handle in handles {
+                            handle.join().unwrap();
+                        }
+                        // The duration from this iteration gets added to the
+                        // sum for this `iters` count
+                        duration += start.elapsed();
+                    }
+                    duration
+                })
+            }
+        );
+        // Free the cache
+        unsafe {
+            Box::from_raw(CACHE_ASSOCIATIVE as *mut CacheAssoc<u16, ()>);
         }
     }
 }
 
-pub fn lru_lock(c: &mut Criterion) {
+pub fn transactional_bench(c: &mut Criterion) {
+    // Prepare the workload into our WORKLOAD Vec
     prepare_data();
-    let mut group = c.benchmark_group("LRU-lock");
+    // Prepare the benchmark group
+    let mut group = c.benchmark_group("TRANSACTIONAL");
     group.sample_size(10);
 
-    for i in 0..LOG_COUNT {
-        unsafe {
-            LRU_LOCK = Box::into_raw(Box::new(Mutex::new(LRU::new(UNIQUE_KEY_COUNT[i]))));
-            for j in 0..UNIQUE_KEY_COUNT[i] {
-                (*LRU_LOCK).lock().unwrap().insert(j as u16, ());
-            }
-        }
-        for thread_count in THREAD_COUNTS.iter() {
-            group.bench_with_input(
-                BenchmarkId::from_parameter(format!("{}/{}", ACCESS_FILENAMES[i], thread_count)),
-                &thread_count,
-                |b, &threads| {
-                    b.iter_custom(|iters| {
-                        let mut duration = Duration::from_micros(0);
-                        for _ in 0..iters {
-                            let (send, recv) = multiqueue::broadcast_queue(unsafe { (*ACCESSES[i]).len() as u64 });
-                            let consumer_stream = recv.add_stream();
-                            let mut handles = Vec::new();
-                            for _ in 0..*threads {
-                                let stream = consumer_stream.clone();
-                                let join_handle = std::thread::spawn(move || {
-                                    work_lock!(LRU_LOCK, stream);
-                                });
-                                handles.push(join_handle);
-                            }
-                            recv.unsubscribe();
-
-                            let start = Instant::now();
-                            for a in unsafe { (*ACCESSES[i]).iter() } {
-                                send.try_send(*a).unwrap();
-                            }
-                            drop(send);
-                            
-                            for handle in handles {
-                                handle.join().unwrap();
-                            }
-                            duration += start.elapsed();
-                        }
-                        duration
-                    })
-                }
-            );
-        }
-        unsafe {
-            Box::from_raw(LRU_LOCK as *mut Mutex<LRU<u16, ()>>);
-        }
+    // Prepare the cache or the threads to access.
+    let cache = CacheTxnal::new(CACHE_SIZE_TOTAL);
+    let mut write_txn = cache.write();
+    fill_generic!(write_txn);
+    write_txn.commit();
+    unsafe {
+        CACHE_TRANSACTIONAL = Box::into_raw(Box::new(cache));
     }
-}
-
-pub fn lru_transactional(c: &mut Criterion) {
-    prepare_data();
-    let mut group = c.benchmark_group("LRU-transactional");
-    group.sample_size(10);
-
-    for i in 0..LOG_COUNT {
-        unsafe {
-            LRU_TRANSACTIONAL = Box::into_raw(Box::new(LRUTransactional::new(UNIQUE_KEY_COUNT[i])));
-            let mut write_txn = (*LRU_TRANSACTIONAL).write();
-            for j in 0..UNIQUE_KEY_COUNT[i] {
-                write_txn.insert(j as u16, ());
-            }
-            write_txn.commit();
-        }
-        for thread_count in THREAD_COUNTS.iter() {
-            group.bench_with_input(
-                BenchmarkId::from_parameter(format!("{}/{}", ACCESS_FILENAMES[i], thread_count)),
-                &thread_count,
-                |b, &threads| {
-                    b.iter_custom(|iters| {
-                        let mut duration = Duration::from_micros(0);
-                        for _ in 0..iters {
-                            let (send, recv) = multiqueue::broadcast_queue(unsafe { (*ACCESSES[i]).len() as u64 });
-                            let consumer_stream = recv.add_stream();
-                            let mut handles = Vec::new();
-                            for _ in 0..*threads {
-                                let stream = consumer_stream.clone();
-                                let join_handle = std::thread::spawn(move || {
-                                    work_transactional!(LRU_TRANSACTIONAL, stream);
-                                });
-                                handles.push(join_handle);
-                            }
-                            recv.unsubscribe();
-
-                            let start = Instant::now();
-                            for a in unsafe { (*ACCESSES[i]).iter() } {
-                                send.try_send(*a).unwrap();
-                            }
-                            drop(send);
-
-                            for handle in handles {
-                                handle.join().unwrap();
-                            }
-                            duration += start.elapsed();
+    // Perform the benchmark one by one for all chosen thread counts.
+    for thread_count in THREAD_COUNTS.iter() {
+        group.bench_with_input(
+            BenchmarkId::from_parameter(thread_count),
+            thread_count,
+            |b, thread_count| {
+                b.iter_custom(|iters| {
+                    let mut duration = Duration::from_micros(0);
+                    for _ in 0..iters {
+                        // First, prepare the broadcast queue to send the
+                        // workload through
+                        let workload_size = unsafe { (*WORKLOAD).len() };
+                        let (send, recv) = multiqueue::broadcast_queue(workload_size as u64);
+                        let consumer_stream = recv.add_stream();
+                        let mut handles = Vec::new();
+                        for _ in 0..*thread_count {
+                            let stream = consumer_stream.clone();
+                            let join_handle = std::thread::spawn(move || {
+                                perform_txnal!(stream);
+                            });
+                            handles.push(join_handle);
                         }
-                        duration
-                    })
-                }
-            );
-        }
-        unsafe {
-            Box::from_raw(LRU_TRANSACTIONAL as *mut LRUTransactional<u16, ()>);
-        }
+                        recv.unsubscribe();
+
+                        // We only start measuring the time once we send requests
+                        let start = Instant::now();
+                        for txn_idx in 0..workload_size {
+                            send.try_send(txn_idx as u16).unwrap();
+                        }
+                        // Stop the broadcast
+                        drop(send);
+
+                        for handle in handles {
+                            handle.join().unwrap();
+                        }
+                        // The duration from this iteration gets added to the
+                        // sum for this `iters` count
+                        duration += start.elapsed();
+                    }
+                    duration
+                })
+            }
+        );
+    }
+    // Free the cache
+    unsafe {
+        Box::from_raw(CACHE_TRANSACTIONAL as *mut CacheTxnal<u16, ()>);
     }
 }
 
 
-criterion_group!(divide, lru_divide);
-criterion_group!(lock, lru_lock);
-criterion_group!(transactional, lru_transactional);
-criterion_main!(divide, lock, transactional);
+criterion_group!(concurrent, lock_bench, associative_bench);
+criterion_main!(concurrent);
 
+
+struct SearchTxn<K> {
+    key_vec: Vec<K>,
+}
+
+struct ModifyTxn<K> {
+    key_vec: Vec<K>,
+    mod_vec: Vec<bool>,
+}
+
+enum Transaction<K> {
+    Search(SearchTxn<K>),
+    Modify(ModifyTxn<K>),
+}
+
+impl<K> Transaction<K> {
+    fn does_modify(&self) -> bool {
+        match self {
+            Self::Search(_) => false,
+            Self::Modify(_) => true,
+        }
+    }
+
+    fn iter_keys(&self) -> std::slice::Iter<'_, K> {
+        match self {
+            Self::Search(st) => st.key_vec.iter(),
+            Self::Modify(mt) => mt.key_vec.iter(),
+        }
+    }
+}
 
 fn prepare_data() {
+    // If not yet prepared, initiate the WORKLOAD vector and get a mutable
+    // reference to it, for convenience.
     unsafe {
-        if !ACCESSES[0].is_null() {
-            // The access logs have already been transferred into our ACCESSES
-            // ARRAY
+        if !WORKLOAD.is_null() {
             return;
         }
-        for i in 0..LOG_COUNT {
-            ACCESSES[i] = Box::into_raw(Box::new(Vec::new()));
+        WORKLOAD = Box::into_raw(Box::new(Vec::new()));
+    }
+    let workload = unsafe {
+        &mut *(WORKLOAD as *mut Vec<Transaction<u16>>)
+    };
+    // Read from the file
+    let filepath = format!("benches/access_logs/{}.txn", WORKLOAD_FILENAME);
+    let file = File::open(filepath).unwrap();
+    let mut lines = BufReader::new(file).lines().enumerate();
+
+    // We parse the file line by line, each 'T' begins a new transaction.
+    let first_line = lines.next().unwrap().1.unwrap();
+    assert_eq!(first_line.as_bytes()[0], 'T' as u8);
+    let mut txn_mod = if first_line.as_bytes()[2] == 'M' as u8 {
+        true
+    } else {
+        false
+    };
+    // vectors that will tell us what keys are accessed and if they are
+    // modified by the access or not
+    let mut txn_query_types = Vec::new();
+    let mut txn_keys = Vec::new();
+    for (_, line) in lines {
+        let line = line.unwrap();
+        let identifier = line.as_bytes()[0] as char;
+        if identifier == 'T' {
+            // This line starts a new transaction.
+            // Process the current transaction
+            workload.push(prepare_txn_struct(txn_mod, txn_keys, txn_query_types));
+            // Init a new transaction
+            txn_mod = if line.as_bytes()[2] == 'M' as u8 {
+                true
+            } else {
+                false
+            };
+            txn_query_types = Vec::new();
+            txn_keys = Vec::new();
+        } else {
+            // This line specifies a query inside the current transaction.
+            // Is this a modification query?
+            let query_type = if line.as_bytes()[0] == 'M' as u8 {
+                true
+            } else {
+                false
+            };
+            let query_id = line[2..line.len()].parse().unwrap();
+            txn_query_types.push(query_type);
+            txn_keys.push(query_id);
         }
     }
-    for i in 0..LOG_COUNT {
-        let filepath = format!("benches/access_logs/{}.in", ACCESS_FILENAMES[i]);
-        let file = File::open(filepath).unwrap();
-        let mut lines = BufReader::new(file).lines().enumerate();
-        // The first line contains the number of unique keys in the access
-        // sample.
-        unsafe {
-            UNIQUE_KEY_COUNT[i] = lines.next().unwrap().1.unwrap().parse().unwrap();
-        }
-        for (_, line) in lines {
-            let key = line.unwrap().parse().unwrap();
-            unsafe {
-                (*(ACCESSES[i] as *mut Vec<u16>)).push(key);
-            }
-        }
+    // Finish the processing of the last transaction
+    workload.push(prepare_txn_struct(txn_mod, txn_keys, txn_query_types));
+}
+
+// Simply takes all components of a transaction and turns them into an actual
+// Transaction struct
+fn prepare_txn_struct<K>(modifies: bool, key_vec: Vec<K>, mod_vec: Vec<bool>) -> Transaction<K> {
+    match modifies {
+        true => Transaction::Modify(ModifyTxn {
+            key_vec,
+            mod_vec,
+        }),
+        false => Transaction::Search(SearchTxn {
+            key_vec
+        }),
     }
 }
