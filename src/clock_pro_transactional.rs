@@ -1,8 +1,8 @@
 use crate::trie_hashmap::{TMReadTxn, TMWriteTxn, TrieMap};
-use std::cell::Cell;
 use std::collections::hash_map::HashMap as StdMap;
 use std::hash::Hash;
 use std::mem;
+use std::sync::{Mutex, MutexGuard};
 use std::ptr;
 
 // A transactional CLOCK-Pro cache that gives read transactions no way of
@@ -81,10 +81,9 @@ pub struct CLOCKProTransactional<K: Clone + Eq + Hash, V: Clone> {
     capacity: usize,
     map: TrieMap<K, V>,
     // the logic fields are only accessed if a write txn for the map was
-    // successfully received, ie. the map itself protects the struct against
-    // concurrent rewrites.
-    logic_valid: Cell<bool>,
-    logic: Cell<*mut CLOCKProLogic<K>>,
+    // successfully received.
+    logic_valid: Mutex<bool>,
+    logic: Mutex<CLOCKProLogic<K>>,
 }
 
 pub struct CLOCKProReadTxn<K: Clone + Eq + Hash, V: Clone> {
@@ -95,8 +94,8 @@ pub struct CLOCKProWriteTxn<'a, K: Clone + Eq + Hash, V: Clone> {
     // The only reason the map is in an Option is so that it can be later taken
     // for commit. It will stay Some(txn) for the whole time though.
     map: Option<TMWriteTxn<'a, K, V>>,
-    logic_valid: &'a Cell<bool>,
-    logic: *mut CLOCKProLogic<K>,
+    logic_valid: MutexGuard<'a, bool>,
+    logic: MutexGuard<'a, CLOCKProLogic<K>>,
 }
 
 // A Node of a circular DLL, which shall hold a record in our cache replacement
@@ -144,8 +143,8 @@ impl<K: Clone + Eq + Hash, V: Clone> CLOCKProTransactional<K, V> {
         Self {
             capacity,
             map: TrieMap::new(),
-            logic_valid: Cell::new(true),
-            logic: Cell::new(Box::into_raw(Box::new(CLOCKProLogic::new(capacity)))),
+            logic_valid: Mutex::new(true),
+            logic: Mutex::new(CLOCKProLogic::new(capacity)),
         }
     }
 
@@ -174,7 +173,7 @@ impl<K: Clone + Eq + Hash, V: Clone> CLOCKProTransactional<K, V> {
                 }
             }
         }
-        self.logic.set(Box::into_raw(Box::new(CLOCKProLogic {
+        *self.logic.lock().unwrap() = CLOCKProLogic {
             capacity: self.capacity,
             cold_capacity: self.capacity - 2,
             map,
@@ -184,7 +183,7 @@ impl<K: Clone + Eq + Hash, V: Clone> CLOCKProTransactional<K, V> {
             hand_cold,
             hand_hot: ptr::null(),
             hand_test: ptr::null(),
-        })));
+        };
     }
 
     /// Acquire a read transaction to this cache
@@ -212,16 +211,17 @@ impl<K: Clone + Eq + Hash, V: Clone> CLOCKProTransactional<K, V> {
         &'a self,
         map_write: TMWriteTxn<'a, K, V>,
     ) -> CLOCKProWriteTxn<'a, K, V> {
-        if !self.logic_valid.get() {
+        let mut logic_valid_guard = self.logic_valid.lock().unwrap();
+        if !*logic_valid_guard {
             // A previous write transaction was rolled back, invalidating the
             // logic structure.
             self.recover_logic();
         }
-        self.logic_valid.set(false);
+        *logic_valid_guard = false;
         CLOCKProWriteTxn {
             map: Some(map_write),
-            logic_valid: &self.logic_valid,
-            logic: self.logic.get(),
+            logic_valid: logic_valid_guard,
+            logic: self.logic.lock().unwrap(),
         }
     }
 }
@@ -241,7 +241,7 @@ impl<K: Clone + Eq + Hash, V: Clone> CLOCKProReadTxn<K, V> {
 impl<K: Clone + Eq + Hash, V: Clone> CLOCKProWriteTxn<'_, K, V> {
     /// Commit the transaction. This consumes the struct.
     pub fn commit(mut self) {
-        self.logic_valid.set(true);
+        *self.logic_valid = true;
         // A problem may occur if this thread crashes before being able to
         // commit the map itself properly. Such accident will corrupt the
         // structure's state permanently, making write transactions impossilbe
@@ -253,9 +253,7 @@ impl<K: Clone + Eq + Hash, V: Clone> CLOCKProWriteTxn<'_, K, V> {
     /// Attempt to retrieve a value reference for given key among currently
     /// cached data.
     pub fn get(&mut self, key: &K) -> Option<&V> {
-        unsafe {
-            (*self.logic).hit(key);
-        }
+        (*self.logic).hit(key);
         self.map.as_ref().unwrap().search(key)
     }
 
@@ -263,7 +261,7 @@ impl<K: Clone + Eq + Hash, V: Clone> CLOCKProWriteTxn<'_, K, V> {
     /// Only call this if the record isn't already present in the cache.
     pub fn insert(&mut self, key: K, value: V) {
         // The logic DS may indicate that we need to evict a value
-        if let Some(remove_key) = unsafe { (*self.logic).submit(key.clone()) } {
+        if let Some(remove_key) = (*self.logic).submit(key.clone()) {
             self.map.as_mut().unwrap().remove(&remove_key);
         }
         self.map.as_mut().unwrap().update(key, value);
@@ -272,7 +270,7 @@ impl<K: Clone + Eq + Hash, V: Clone> CLOCKProWriteTxn<'_, K, V> {
     /// This function enables modifications to the present values.
     /// Only call this if the record *is* already present in the cache.
     pub fn reinsert(&mut self, key: K, value: V) {
-        unsafe { (*self.logic).hit(&key) }
+        (*self.logic).hit(&key);
         self.map.as_mut().unwrap().update(key, value);
     }
 }
@@ -725,31 +723,6 @@ impl<K: Clone + Eq + Hash> CLOCKProLogic<K> {
     }
 }
 
-// Drop implementations for our structs:
-
-impl<K: Clone + Eq + Hash, V: Clone> Drop for CLOCKProTransactional<K, V> {
-    fn drop(&mut self) {
-        if self.logic_valid.get() {
-            unsafe {
-                Box::from_raw(self.logic.get());
-            }
-        }
-    }
-}
-
-impl<'a, K: Clone + Eq + Hash, V: Clone> Drop for CLOCKProWriteTxn<'_, K, V> {
-    fn drop(&mut self) {
-        // Drop the whole logic data structure, because we must count with the
-        // possibility that the cache has been modified, and therefore now
-        // holds different data than what is recorded in 'logic'.
-        if !self.logic_valid.get() {
-            unsafe {
-                Box::from_raw(self.logic);
-            }
-        }
-    }
-}
-
 impl<K: Clone + Eq + Hash> Drop for CLOCKProLogic<K> {
     fn drop(&mut self) {
         if !self.hand_cold.is_null() {
@@ -782,7 +755,7 @@ mod test {
         write.insert(6, 12);
         write.commit();
         check_clock_content(
-            unsafe { &*cache.logic.get() },
+            &*cache.logic.lock().unwrap(),
             vec![
                 (2, false, true),
                 (3, false, true),
@@ -806,7 +779,7 @@ mod test {
         // -------------------------------------------------------------
         write.commit();
         check_clock_content(
-            unsafe { &*cache.logic.get() },
+            &*cache.logic.lock().unwrap(),
             vec![
                 (4, false, true),
                 (5, false, true),
@@ -824,7 +797,7 @@ mod test {
         assert_eq!(write.get(&7), Some(&14));
         write.commit();
         check_clock_content(
-            unsafe { &*cache.logic.get() },
+            &*cache.logic.lock().unwrap(),
             vec![
                 (6, false, true),
                 (4, true, true),
@@ -843,7 +816,7 @@ mod test {
         write.insert(11, 22);
         write.commit();
         check_clock_content(
-            unsafe { &*cache.logic.get() },
+            &*cache.logic.lock().unwrap(),
             vec![
                 (10, false, true),
                 (11, false, true),
@@ -863,7 +836,7 @@ mod test {
         write.insert(16, 32);
         write.commit();
         check_clock_content(
-            unsafe { &*cache.logic.get() },
+            &*cache.logic.lock().unwrap(),
             vec![
                 (15, false, true),
                 (16, false, true),
@@ -891,7 +864,7 @@ mod test {
         write.insert(10, 20);
         write.commit();
         check_clock_content(
-            unsafe { &*cache.logic.get() },
+            &*cache.logic.lock().unwrap(),
             vec![
                 (7, false, true),
                 (0, false, true),
