@@ -9,6 +9,7 @@ use std::ptr;
 use criterion::*;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use std::sync::mpsc::*;
 
 // CODE UNDER CONSTRUCTION
 // 
@@ -24,27 +25,36 @@ use std::time::{Duration, Instant};
 // from an spmc channel that actually sends indexes in the WORKLOAD Vec, not the Transaction
 // structs themselves.
 
+// We will work with the workload described in
+// "benches/access_logs/WORKLOAD_FILENAME.txn"
 const WORKLOAD_FILENAME: &str = "Carabas";
+// This vector will contain the whole workload in memory
 static mut WORKLOAD: *const Vec<Transaction<u16>> = ptr::null();
-const CACHE_SIZE_TOTAL: usize = 4224;
-const THREAD_COUNTS: [usize; 1] = [2];
+// The max. total number of records cached at one time by the cache(s) that we
+// benchmark
+const CACHE_SIZE_TOTAL: usize = 3456;
+// All concurrent strategies (single_thread_bench is a separate benchmark) will
+// be measured one by one with these thread counts.
+const THREAD_COUNTS: [usize; 4] = [2, 4, 8, 12];
 
+// Global variables containing the data structures used by the worker threads
+static mut CACHE_SINGLE_THREAD: *const Cache<u16, ()> = ptr::null();
 static mut CACHE_LOCK: *const Mutex<Cache<u16, ()>> = ptr::null();
 static mut CACHE_ASSOCIATIVE: *const CacheAssoc<u16, ()> = ptr::null();
+static mut PER_THREAD_MOD_LOCK: *const Mutex<()> = ptr::null();
+static mut CACHES_PER_THREAD: *const Vec<Cache<u16, ()>> = ptr::null();
 static mut CACHE_TRANSACTIONAL: *const CacheTxnal<u16, ()> = ptr::null();
 
-// A macro to occupy any cache with a proper general get and insert function
+// A macro to occupy any cache having a proper general get and insert function
 // with the keys in our workload.
 // We use this to initiate the caches, so that the benchmarks run on caches
 // that already have a working cached set.
 macro_rules! fill_generic {
     ($cache:expr) => {
         for txn in unsafe { (*WORKLOAD).iter() } {
-            let key_vec = match txn {
-                Transaction::Search(st) => &st.key_vec,
-                Transaction::Modify(mt) => &mt.key_vec,
-            };
-            for key in key_vec.iter() {
+            for key in txn.iter_keys() {
+                // We simply hit accessed keys and insert those that are
+                // missing.
                 if $cache.get(key).is_none() {
                     $cache.insert(*key, ());
                 }
@@ -53,41 +63,258 @@ macro_rules! fill_generic {
     };
 }
 
-macro_rules! perform_lock {
+// This macro describes the function of the single thread spawned by our single
+// thread benchmark. It does what all the concurrent benchmarks do, but only
+// using one sequential cache, so that it can be used to compare our concurrent
+// benchmarks with the performance of just one thread.
+macro_rules! perform_single_thread {
+    // The parameter is a stream from the multiqueue channel that distributes
+    // transactions to process.
     ($query_stream:expr) => {
+        // We borrow the cache mutably for convenience
+        let cache = unsafe {
+            &mut *(CACHE_SINGLE_THREAD as *mut Cache<u16, ()>)
+        };
+        // Iterate through all the transactions and perform their simulation
         for txn_idx in $query_stream {
-            let mut cache_guard = unsafe {
-                (*CACHE_LOCK).lock().unwrap()
-            };
-            // Performance-wise, the CLOCK-Pro acts the same for both `get` and
-            // `get_mut`. So we may just use get at all times (the whole cache
-            for uid in unsafe { (*WORKLOAD)[txn_idx as usize].iter_keys() } {
-                if (*cache_guard).get(uid).is_none() {
-                    (*cache_guard).insert(*uid, ());
+            let txn = unsafe { &(*WORKLOAD)[txn_idx as usize] };
+            match txn {
+                Transaction::Search(st) => {
+                    // We simulate search-only transactions by performing
+                    // searches on all the keys and adding those that are
+                    // missing.
+                    for uid in st.key_vec.iter() {
+                        if cache.get(uid).is_none() {
+                            cache.insert(*uid, ());
+                        }
+                    }
+                },
+                Transaction::Modify(mt) => {
+                    // In modifying transactions, we get mutable references to
+                    // the records that get modified and immutable to the rest
+                    // (adding the records when missing).
+                    for i in 0..mt.key_vec.len() {
+                        let uid = mt.key_vec[i];
+                        if mt.mod_vec[i] {
+                            if cache.get_mut(&uid).is_none() {
+                                cache.insert(uid, ());
+                            }
+                        } else {
+                            if cache.get(&uid).is_none() {
+                                cache.insert(uid, ());
+                            }
+                        }
+                    }
                 }
             }
         }
     };
 }
 
-macro_rules! perform_assoc {
+// This macro describes the funtion of a worker thread in the LOCK strategy.
+macro_rules! perform_lock {
+    // The parameter is a stream from the multiqueue channel that distributes
+    // transactions to process.
     ($query_stream:expr) => {
+        // Iterate through all the transactions and perform their simulation
         for txn_idx in $query_stream {
-            // Performance-wise, the CLOCK-Pro acts the same for both `get` and
-            // `get_mut`. So we may just use get at all times (the necessary
-            // cache slots are locked, so a simple `get` is a valid mutation
-            // simulation.
-            let key_vec = match unsafe { &(*WORKLOAD)[txn_idx as usize] } {
-                Transaction::Search(st) => &st.key_vec,
-                Transaction::Modify(mt) => &mt.key_vec,
-            };
+            // Lock the cache to be able to work with it
             let mut cache_guard = unsafe {
-                (*CACHE_ASSOCIATIVE).generate_mut_guard(key_vec)
+                (*CACHE_LOCK).lock().unwrap()
             };
-            for uid in key_vec.iter() {
-                if cache_guard.get(uid).is_none() {
-                    cache_guard.insert(*uid, ());
+            let txn = unsafe { &(*WORKLOAD)[txn_idx as usize] };
+            match txn {
+                Transaction::Search(st) => {
+                    // We simulate search-only transactions by performing
+                    // searches on all the keys and adding those that are
+                    // missing.
+                    for uid in st.key_vec.iter() {
+                        if (*cache_guard).get(uid).is_none() {
+                            (*cache_guard).insert(*uid, ());
+                        }
+                    }
                 }
+                Transaction::Modify(mt) => {
+                    // In modifying transactions, we get mutable references to
+                    // the records that get modified and immutable to the rest
+                    // (adding the records when missing).
+                    for i in 0..mt.key_vec.len() {
+                        let uid = mt.key_vec[i];
+                        if mt.mod_vec[i] {
+                            if (*cache_guard).get_mut(&uid).is_none() {
+                                (*cache_guard).insert(uid, ());
+                            }
+                        } else {
+                            if (*cache_guard).get(&uid).is_none() {
+                                (*cache_guard).insert(uid, ());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+}
+
+// This macro describes the funtion of a worker thread in the ASSOCIATIVE
+// strategy.
+macro_rules! perform_assoc {
+    // The parameter is a stream from the multiqueue channel that distributes
+    // transactions to process.
+    ($query_stream:expr) => {
+        // Iterate through all the transactions and perform their simulation
+        for txn_idx in $query_stream {
+            let txn = unsafe { &(*WORKLOAD)[txn_idx as usize] };
+            match txn {
+                Transaction::Search(st) => {
+                    // Lock the necessary cache "slots" for this transaction
+                    let mut cache_guard = unsafe {
+                        (*CACHE_ASSOCIATIVE).generate_mut_guard(&st.key_vec)
+                    };
+                    // We simulate search-only transactions by performing
+                    // searches on all the keys and adding those that are
+                    // missing.
+                    for uid in st.key_vec.iter() {
+                        if cache_guard.get(uid).is_none() {
+                            cache_guard.insert(*uid, ());
+                        }
+                    }
+                }
+                Transaction::Modify(mt) => {
+                    // Lock the necessary cache "slots" for this transaction
+                    let mut cache_guard = unsafe {
+                        (*CACHE_ASSOCIATIVE).generate_mut_guard(&mt.key_vec)
+                    };
+                    // In modifying transactions, we get mutable references to
+                    // the records that get modified and immutable to the rest
+                    // (adding the records when missing).
+                    for i in 0..mt.key_vec.len() {
+                        let uid = mt.key_vec[i];
+                        if mt.mod_vec[i] {
+                            if cache_guard.get_mut(&uid).is_none() {
+                                cache_guard.insert(uid, ());
+                            }
+                        } else {
+                            if cache_guard.get(&uid).is_none() {
+                                cache_guard.insert(uid, ());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+}
+
+// A macro that describes the function of our dedicated invalidation thread in
+// the per-thread strategy
+// (which receives invalidation requests and distributes them to all the
+// affected threads)
+macro_rules! per_thread_invalidation_thread {
+    ($recv:expr, $thread_sends:expr) => {
+        while let Ok((write_thread, inval_vec)) = $recv.recv() {
+            // Send the invalidation requests to all threads except the one
+            // which issued it
+            for i in 0..$thread_sends.len() {
+                if i != write_thread {
+                    // The send may actually fail, legally, since some threads
+                    // may have already finished their execution.
+                    let _result = $thread_sends[i].send(inval_vec.clone());
+                }
+            }
+        }
+    };
+}
+
+/// Takes care of invalidating all the necessary records of a thread's cache
+/// (when using the per-thread strategy)
+fn per_thread_invalidate(cache: &mut Cache<u16, ()>, invalidate_recv: &Receiver<Vec<u16>>) -> bool {
+    let mut invalidated = false;
+    while let Ok(key_vec) = invalidate_recv.try_recv() {
+        invalidated = true;
+        for key in key_vec.iter() {
+            cache.evict(key);
+        }
+    }
+    invalidated
+}
+
+/// Takes care of a read-only transaction in the per-thread strategy
+fn per_thread_read(cache: &mut Cache<u16, ()>, txn: &SearchTxn<u16>, invalidate_recv: &Receiver<Vec<u16>>) {
+    // We need to work with a valid state of the cache, so if some keys in
+    // our transaction are missing, forcing us to insert them, while we
+    // also get an invalidation request, we rerun the whole transaction
+    // (some of the used keys may have been invalidated)
+    // This requires all accessed keys to fit into the cache! Although we
+    // may quite safely assume they will, this is exploitable.
+    for uid in txn.key_vec.iter() {
+        if cache.get(uid).is_none() {
+            let invalidated = per_thread_invalidate(cache, invalidate_recv);
+            cache.insert(*uid, ());
+            if invalidated {
+                // Rerun the transaction
+                per_thread_read(cache, txn, invalidate_recv);
+                break;
+            }
+        }
+    }
+}
+
+/// Takes care of a transaction that modifies records in the per-thread strategy
+fn per_thread_mod(thread_idx: usize, cache: &mut Cache<u16, ()>, txn: &ModifyTxn<u16>, invalidate_send: &SyncSender<(usize, Vec<u16>)>) {
+    let mod_guard = unsafe { (*PER_THREAD_MOD_LOCK).lock().unwrap() };
+    // We will store all the keys we modify into a Vec to be able to send
+    // an invalidation request. We simply iterate it for potential
+    // duplicates, quadratic time is no issue here as the Vec is expected
+    // to be short.
+    let mut inval_vec = Vec::new();
+    for i in 0..txn.key_vec.len() {
+        let uid = txn.key_vec[i];
+        if txn.mod_vec[i] {
+            // We perform a modification on the record
+            if cache.get_mut(&uid).is_none() {
+                cache.insert(uid, ());
+            }
+            // Add the key (UID) to the inval_vec, if it isn't already
+            // present
+            let mut present = false;
+            for invalid_uid in inval_vec.iter() {
+                if *invalid_uid == uid {
+                    present = true;
+                    break;
+                }
+            }
+            if !present {
+                inval_vec.push(uid);
+            }
+        } else {
+            // Non-modifying record access
+            if cache.get(&uid).is_none() {
+                cache.insert(uid, ());
+            }
+        }
+    }
+    invalidate_send.send((thread_idx, inval_vec)).unwrap();
+    // Just to be clear about only now dropping the guard
+    drop(mod_guard);
+}
+
+// This macro describes the funtion of a worker thread in the PER-THREAD
+// strategy.
+macro_rules! perform_per_thread {
+    // The parameter is a stream from the multiqueue channel that distributes
+    // transactions to process.
+    ($thread_idx:expr, $query_stream:expr, $invalidate_send:expr, $invalidate_recv:expr) => {
+        let cache = unsafe {
+            &mut (*(CACHES_PER_THREAD as *mut Vec<Cache<u16, ()>>))[$thread_idx]
+        };
+        for txn_idx in $query_stream {
+            // Perform potential invalidations to stay up to date
+            per_thread_invalidate(cache, &$invalidate_recv);
+            let txn = unsafe { &(*WORKLOAD)[txn_idx as usize] };
+            match txn {
+                Transaction::Search(st) => per_thread_read(cache, st, &$invalidate_recv),
+                Transaction::Modify(mt) => per_thread_mod($thread_idx, cache, mt, &$invalidate_send),
             }
         }
     };
@@ -106,6 +333,9 @@ macro_rules! txnal_write {
         }
         // Perform given transaction
         match unsafe { &(*WORKLOAD)[$txn_idx as usize] } {
+            // We simulate search-only transactions by performing
+            // searches on all the keys and adding those that are
+            // missing.
             Transaction::Search(st) => {
                 for uid in st.key_vec.iter() {
                     if write.get(uid).is_none() {
@@ -114,6 +344,11 @@ macro_rules! txnal_write {
                 }
             }
             Transaction::Modify(mt) => {
+                // The transactional approach requires modifications to be
+                // performed using the `reinsert` method.
+                // So here, we only ger references for search queries (adding
+                // the missing ones) and simulate modifications to records by
+                // 'reinserting' them.
                 for i in 0..mt.key_vec.len() {
                     let uid = mt.key_vec[i];
                     if write.get(&uid).is_none() {
@@ -129,6 +364,8 @@ macro_rules! txnal_write {
 }
 
 macro_rules! perform_txnal {
+    // The parameter is a stream from the multiqueue channel that distributes
+    // transactions to process.
     ($query_stream:expr) => {
         // When only using a read txn, 
         let mut hit_list = DLList::new();
@@ -163,6 +400,57 @@ macro_rules! perform_txnal {
             }
         }
     };
+}
+
+/// A benchmark function that aims to compare the performance of the concurrent
+/// strategies with the performance of one thread with a simple sequential
+/// cache.
+pub fn single_thread_bench(c: &mut Criterion) {
+    // Prepare the workload into our WORKLOAD Vec
+    prepare_data();
+    // Prepare the benchmark group
+    let mut group = c.benchmark_group("SINGLE_THREAD");
+    group.sample_size(10);
+
+    // Prepare the cache
+    let mut cache = Cache::new(CACHE_SIZE_TOTAL);
+    fill_generic!(cache);
+    unsafe {
+        CACHE_SINGLE_THREAD = Box::into_raw(Box::new(cache));
+    }
+    // Perform the benchmark itself:
+    group.bench_function("single_thread", move |b| {
+        b.iter_custom(|iters| {
+            let mut duration = Duration::from_micros(0);
+            for _ in 0..iters {
+                // First, prepare the broadcast queue to send the workload
+                // through
+                let workload_size = unsafe { (*WORKLOAD).len() };
+                let (send, recv) = multiqueue::broadcast_queue(workload_size as u64);
+                let consumer_stream = recv.add_stream();
+                // Spawn the worker thread
+                let join_handle = std::thread::spawn(move || {
+                    perform_single_thread!(consumer_stream);
+                });
+
+                // We only start measuring the time once we send requests
+                let start = Instant::now();
+                for txn_idx in 0..workload_size {
+                    send.try_send(txn_idx as u16).unwrap();
+                }
+                // Stop the broadcast
+                drop(send);
+
+                join_handle.join().unwrap();
+                duration += start.elapsed();
+            }
+            duration
+        })
+    });
+    // Free the cache
+    unsafe {
+        Box::from_raw(CACHE_SINGLE_THREAD as *mut Cache<u16, ()>);
+    }
 }
 
 /// The LOCK benchmark function.
@@ -239,7 +527,7 @@ pub fn associative_bench(c: &mut Criterion) {
     // Perform the benchmark one by one for all chosen thread counts.
     for thread_count in THREAD_COUNTS.iter() {
         // Prepare the cache
-        let cache = CacheAssoc::new(CACHE_SIZE_TOTAL, thread_count * 4);
+        let cache = CacheAssoc::new(CACHE_SIZE_TOTAL, thread_count * 3);
         let mut unique_guard = cache.generate_unique_access_guard();
         fill_generic!(unique_guard);
         drop(unique_guard);
@@ -294,6 +582,92 @@ pub fn associative_bench(c: &mut Criterion) {
     }
 }
 
+pub fn per_thread_bench(c: &mut Criterion) {
+    // Prepare the workload into our WORKLOAD Vec
+    prepare_data();
+    // Prepare the benchmark group
+    let mut group = c.benchmark_group("PER-THREAD");
+    group.sample_size(10);
+
+    // Perform the benchmark one by one for all chosen thread counts.
+    for thread_count in THREAD_COUNTS.iter() {
+        // Prepare the caches
+        let mut caches = Vec::with_capacity(*thread_count);
+        for _ in 0..*thread_count {
+            let mut cache = Cache::new(CACHE_SIZE_TOTAL / *thread_count);
+            fill_generic!(cache);
+            caches.push(cache);
+        }
+        unsafe {
+            CACHES_PER_THREAD = Box::into_raw(Box::new(caches));
+            // Also prepare the write lock
+            PER_THREAD_MOD_LOCK = Box::into_raw(Box::new(Mutex::new(())));
+        }
+        // The bench function itself:
+        group.bench_with_input(
+            BenchmarkId::from_parameter(thread_count),
+            thread_count,
+            |b, thread_count| {
+                b.iter_custom(|iters| {
+                    let mut duration = Duration::from_micros(0);
+                    for _ in 0..iters {
+                        // First, prepare the broadcast queue to send the workload through
+                        let workload_size = unsafe { (*WORKLOAD).len() };
+                        let (send, recv) = multiqueue::broadcast_queue(workload_size as u64);
+                        let consumer_stream = recv.add_stream();
+                        // Also prepare the invalidation mechanism:
+                        // A "rendezvous" channel for record invalidation requests
+                        let (inval_send, inval_recv) = sync_channel(0);
+                        // Vector containing "send"s to specific threads
+                        let mut thread_sends = Vec::new();
+                        // Spawn all the worker threads
+                        let mut handles = Vec::new();
+                        for thread_idx in 0..*thread_count {
+                            let stream = consumer_stream.clone();
+                            let inval_send = inval_send.clone();
+                            let (thread_inval_send, thread_inval_recv) = channel();
+                            thread_sends.push(thread_inval_send);
+                            let join_handle = std::thread::spawn(move || {
+                                perform_per_thread!(thread_idx, stream, inval_send, thread_inval_recv);
+                            });
+                            handles.push(join_handle);
+                        }
+                        drop(inval_send);
+                        recv.unsubscribe();
+
+                        // Spawn the dedicated invalidation broadcast thread.
+                        let invalidation_thread_handle = std::thread::spawn(move || {
+                            per_thread_invalidation_thread!(inval_recv, thread_sends);
+                        });
+
+                        // We only start measuring the time once we send requests
+                        let start = Instant::now();
+                        for txn_idx in 0..workload_size {
+                            send.try_send(txn_idx as u16).unwrap();
+                        }
+                        // Stop the broadcast
+                        drop(send);
+
+                        for handle in handles {
+                            handle.join().unwrap();
+                        }
+                        // The duration from this iteration gets added to the
+                        // sum for this `iters` count
+                        duration += start.elapsed();
+                        invalidation_thread_handle.join().unwrap();
+                    }
+                    duration
+                })
+            }
+        );
+        // Free the caches and the write lock
+        unsafe {
+            Box::from_raw(CACHES_PER_THREAD as *mut Vec<Cache<u16, ()>>);
+            Box::from_raw(PER_THREAD_MOD_LOCK as *mut Mutex<()>);
+        }
+    }
+}
+
 pub fn transactional_bench(c: &mut Criterion) {
     // Prepare the workload into our WORKLOAD Vec
     prepare_data();
@@ -301,7 +675,7 @@ pub fn transactional_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("TRANSACTIONAL");
     group.sample_size(10);
 
-    // Prepare the cache or the threads to access.
+    // Prepare the cache for the threads to access.
     let cache = CacheTxnal::new(CACHE_SIZE_TOTAL);
     let mut write_txn = cache.write();
     fill_generic!(write_txn);
@@ -359,26 +733,35 @@ pub fn transactional_bench(c: &mut Criterion) {
     }
 }
 
+criterion_group!(single_thread, single_thread_bench);
+criterion_group!(concurrent, lock_bench, associative_bench, per_thread_bench, transactional_bench);
+criterion_main!(single_thread, concurrent);
 
-criterion_group!(concurrent, lock_bench, associative_bench);
-criterion_main!(concurrent);
-
-
+/// In our abstraction, a search-only transaction is fully described by the
+/// sequence of accessed records (keys).
 struct SearchTxn<K> {
     key_vec: Vec<K>,
 }
 
+/// A transaction that modifies records contains the accessed keys, and also
+/// information on which records are modified.
 struct ModifyTxn<K> {
     key_vec: Vec<K>,
+    // `mod_vec` has the same length as `key_vec`, for each key, this says if
+    // the record is modified (then the corresponding element is `true`)
     mod_vec: Vec<bool>,
 }
 
+/// General transaction enum. Can be of two types
+/// * Search: a search-only transaction
+/// * Modify: a transaction that modifies some records
 enum Transaction<K> {
     Search(SearchTxn<K>),
     Modify(ModifyTxn<K>),
 }
 
 impl<K> Transaction<K> {
+    /// Does this transaction modify some records?
     fn does_modify(&self) -> bool {
         match self {
             Self::Search(_) => false,
@@ -386,6 +769,7 @@ impl<K> Transaction<K> {
         }
     }
 
+    /// Iterates over references to all the keys accessed by this transaction.
     fn iter_keys(&self) -> std::slice::Iter<'_, K> {
         match self {
             Self::Search(st) => st.key_vec.iter(),
@@ -394,6 +778,11 @@ impl<K> Transaction<K> {
     }
 }
 
+/// This function is responsible for obtaining our workload from our custom txn
+/// file located in "benches/access_logs/[WORKLOAD_FILENAME].txn" and storing
+/// it inside `WORKLOAD`. If the workload is already in memory, it doesn't go
+/// through this process again, so we can call this function at the beginning
+/// of each benchmark without wasting resources.
 fn prepare_data() {
     // If not yet prepared, initiate the WORKLOAD vector and get a mutable
     // reference to it, for convenience.
