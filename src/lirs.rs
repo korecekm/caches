@@ -5,9 +5,9 @@
 //
 // The most important logical block of this data structure is the access_queue, where accesses
 // (both inserts and gets) to specific keys are recorded in a FIFO order.
-// There are two types of cache records, LIRs (low inter-reference) and HIRs (high i-r, these are
+// There are two types of cache records, LIRs (low inter-reference) and HIRs (high i-r), these are
 // further divided into three types based on their appearance in the access queue and their value's
-// residency in the cache).
+// residency in the cache.
 //
 // While lir_capacity (the maximum chosen amount of LIR records at one point) isn't filled yet,
 // this cache acts just like the LRU. Once this capacity is reached, elements that would be evicted
@@ -15,15 +15,15 @@
 // pushed into our resident_hirs queue.
 //
 // Once both lir_capacity and hir_capacity (ie. the total allowed amount of resident - cached
-// values) are reached and new records are inserted, we evict the back element of resident_hirs,
-// but leave its potential access record. If the inserted element is found in the access_queue (ie.
-// it is a non-resident HIR), it turns into a LIR and pushes the back LIR in the access queue out,
-// turning it into a HIR element (with no recorded access). If the inserted element has no access
-// record, on the other hand, It is inserted as a 'full' HIR, both at the front of access_queue and
-// resident_hirs queues. For this to work properly, the access_queue tail is always a LIR record,
-// potential HIRs occuring at the tail are simply popped out.
+// values) are reached and new records are inserted, we evict the back (queue front) element of
+// resident_hirs, but leave its potential access record. If the inserted element is found in the
+// access_queue (ie. it is a non-resident HIR), it turns into a LIR and pushes the back LIR in the
+// access queue out, turning it into a HIR element (with no recorded access). If the inserted
+// element has no access record, on the other hand, It is inserted as a 'full' HIR, both at the
+// front of access_queue and resident_hirs queues. For this to work properly, the access_queue tail
+// is always a LIR record, potential HIRs occuring at the tail are simply popped out.
 //
-// All this is enabled via 'map', a hash map that let's us access these records in constant time
+// All this is enabled via 'map', a hash map that lets us access these records in constant time
 // and also is the only component of our data structure that lets us determine record types.
 
 use crate::list::{DLList, DLNode};
@@ -126,6 +126,7 @@ impl<K: Clone + Eq + Hash, V> LIRSCache<K, V> {
                     panic!("Unreachable. A LIR record inside the access queue wasn't present or wasn't marked as LIR in the record hash map.");
                 }
                 self.lir_count -= 1;
+                self.prune_queue();
             }
             // Now insert the new records as LIR
             self.insert_lir(key, value);
@@ -152,10 +153,13 @@ impl<K: Clone + Eq + Hash, V> LIRSCache<K, V> {
             match record {
                 Record::Lir(_, _) => unsafe { Some(self.access_lir(key)) },
                 Record::Hir(access_ptr, hir_ptr) => unsafe {
-                    Some(self.access_hir(access_ptr.clone(), hir_ptr.clone()))
+                    let access_ptr = access_ptr.clone();
+                    let hir_ptr = hir_ptr.clone();
+                    Some(self.access_hir(access_ptr, hir_ptr))
                 },
                 Record::HirNa(hir_ptr) => unsafe {
-                    Some(self.access_hir_no_access(hir_ptr.clone()))
+                    let hir_ptr = hir_ptr.clone();
+                    Some(self.access_hir_no_access(hir_ptr))
                 },
                 Record::HirNr(access_ptr) => unsafe {
                     // The record is non-resident, but we may move it to the queue's front in case
@@ -243,8 +247,8 @@ impl<K: Clone + Eq + Hash, V> LIRSCache<K, V> {
         &(*hir_ptr.as_ptr()).elem.1
     }
 
-    /// When the LIR capacity hasn't been reached yet, this enables us to
-    /// insert a new LIR element to the front of the access queue
+    /// When the LIR capacity isn't been reached yet, this enables us to insert
+    /// a new LIR element to the front of the access queue
     fn insert_lir(&mut self, key: K, value: V) {
         let mut lir_node = NonNull::new(Box::into_raw(Box::new(DLNode::new(key.clone())))).unwrap();
         self.map.insert(key, Record::Lir(lir_node, Box::new(value)));
@@ -393,22 +397,24 @@ mod test {
 
     #[test]
     fn smoke_test() {
-        // Doesn't test the cache semantics, but simply makes sure the cache returns the correct
-        // number of elements.
+        // Makes sure the cache always returns the correct number of elements.
         let mut rng = thread_rng();
-        let mut lirs = LIRS::new(20, 5);
-        for i in 0..25 {
+        let mut lirs = LIRS::new(30, 10);
+        for i in 0..40 {
             lirs.insert(i, i);
+            check_access_back_lir(&lirs);
         }
 
-        for _ in 0..1000 {
+        for _ in 0..2000 {
             let key = rng.gen_range(0, 200);
-            let record = lirs.get(&key);
-            if record.is_none() {
+            let miss = lirs.get(&key).is_none();
+            check_access_back_lir(&lirs);
+            if miss {
                 lirs.insert(key, key);
             }
+            check_access_back_lir(&lirs);
 
-            // Check that there are exactly 25 cached records
+            // Check that there are exactly 40 cached records
             let mut count = 0;
             for k in 0..200 {
                 let record = lirs.get(&k);
@@ -416,8 +422,17 @@ mod test {
                     assert_eq!(val, &k);
                     count += 1;
                 }
+                check_access_back_lir(&lirs);
             }
-            assert_eq!(count, 25);
+            assert_eq!(count, 40);
+        }
+    }
+
+    fn check_access_back_lir(cache: &LIRS<u32, u32>) {
+        if let Some(ref access_key) = cache.access_queue.get_back() {
+            assert!(cache.map.get(access_key).unwrap().is_lir());
+        } else {
+            panic!("Access queue returned None for its back element");
         }
     }
 }
