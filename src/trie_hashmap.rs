@@ -847,6 +847,40 @@ mod test {
         }
     }
 
+    #[test]
+    fn multiple_reads() {
+        // Tests the behavior of multiple read snapshots to very different data
+        let map = TrieMap::new();
+        let read1 = map.read();
+        let mut write = map.write();
+        for i in 0..10 {
+            write.update(i, i);
+        }
+        write.commit();
+        let read2 = map.read();
+        write = map.write();
+        write.remove(&4);
+        write.update(5, 100);
+        write.remove(&6);
+        write.update(10, 10);
+        write.commit();
+        write = map.write();
+        for i in 20..30 {
+            write.update(i, i);
+        }
+        let read3 = map.read();
+        
+        // Testing the data:
+        assert_eq!(read3.search(&21), None);
+        assert_eq!(read3.search(&5), Some(&100));
+        assert_eq!(read3.search(&6), None);
+        assert_eq!(read1.search(&5), None);
+        assert_eq!(read2.search(&4), Some(&4));
+        assert_eq!(read2.search(&5), Some(&5));
+        assert_eq!(write.search(&21), Some(&21));
+        assert_eq!(write.search(&4), None);
+    }
+
     // see description for the next macro (check_all)
     macro_rules! check_one {
         ($expect:expr, $actual:expr, $key:expr) => {
