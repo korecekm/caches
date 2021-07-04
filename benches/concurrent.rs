@@ -35,8 +35,7 @@ static mut WORKLOAD: *const Vec<Transaction<u16>> = ptr::null();
 const CACHE_SIZE_TOTAL: usize = 3456;
 // All concurrent strategies (single_thread_bench is a separate benchmark) will
 // be measured one by one with these thread counts.
-//const THREAD_COUNTS: [usize; 4] = [2, 4, 8, 12];
-const THREAD_COUNTS: [usize; 1] = [2];
+const THREAD_COUNTS: [usize; 4] = [2, 4, 8, 12];
 
 // Global variables containing the data structures used by the worker threads
 static mut CACHE_SINGLE_THREAD: *const Cache<u16, ()> = ptr::null();
@@ -410,7 +409,7 @@ pub fn single_thread_bench(c: &mut Criterion) {
         CACHE_SINGLE_THREAD = Box::into_raw(Box::new(cache));
     }
     // Perform the benchmark itself:
-    group.bench_function("single_thread", move |b| {
+    group.bench_function(format!("single_thread/{}", WORKLOAD_FILENAME), move |b| {
         b.iter_custom(|iters| {
             let mut duration = Duration::from_micros(0);
             for _ in 0..iters {
@@ -460,7 +459,7 @@ pub fn lock_bench(c: &mut Criterion) {
     // Perform the benchmark one by one for all chosen thread counts.
     for thread_count in THREAD_COUNTS.iter() {
         group.bench_with_input(
-            BenchmarkId::from_parameter(thread_count),
+            BenchmarkId::from_parameter(format!("{}/{}", WORKLOAD_FILENAME, thread_count)),
             thread_count,
             |b, thread_count| {
                 b.iter_custom(|iters| {
@@ -528,7 +527,7 @@ pub fn associative_bench(c: &mut Criterion) {
         }
         // The bench function itself:
         group.bench_with_input(
-            BenchmarkId::from_parameter(thread_count),
+            BenchmarkId::from_parameter(format!("{}/{}", WORKLOAD_FILENAME, thread_count)),
             thread_count,
             |b, thread_count| {
                 b.iter_custom(|iters| {
@@ -599,7 +598,7 @@ pub fn per_thread_bench(c: &mut Criterion) {
         }
         // The bench function itself:
         group.bench_with_input(
-            BenchmarkId::from_parameter(thread_count),
+            BenchmarkId::from_parameter(format!("{}/{}", WORKLOAD_FILENAME, thread_count)),
             thread_count,
             |b, thread_count| {
                 b.iter_custom(|iters| {
@@ -682,7 +681,7 @@ pub fn transactional_bench(c: &mut Criterion) {
     // Perform the benchmark one by one for all chosen thread counts.
     for thread_count in THREAD_COUNTS.iter() {
         group.bench_with_input(
-            BenchmarkId::from_parameter(thread_count),
+            BenchmarkId::from_parameter(format!("{}/{}", WORKLOAD_FILENAME, thread_count)),
             thread_count,
             |b, thread_count| {
                 b.iter_custom(|iters| {
