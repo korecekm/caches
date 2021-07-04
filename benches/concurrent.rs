@@ -42,7 +42,7 @@ static mut CACHE_SINGLE_THREAD: *const Cache<u16, ()> = ptr::null();
 static mut CACHE_LOCK: *const Mutex<Cache<u16, ()>> = ptr::null();
 static mut CACHE_ASSOCIATIVE: *const CacheAssoc<u16, ()> = ptr::null();
 static mut PER_THREAD_MOD_LOCK: *const Mutex<()> = ptr::null();
-static mut CACHES_PER_THREAD: *const Vec<Cache<u16, ()>> = ptr::null();
+static mut CACHES_PER_THREAD: [*const Cache<u16, ()>; 32] = [ptr::null(); 32];
 static mut CACHE_TRANSACTIONAL: *const CacheTxnal<u16, ()> = ptr::null();
 
 // A macro to occupy any cache having a proper general get and insert function
@@ -288,7 +288,7 @@ macro_rules! perform_per_thread {
     // invalidation stream leading from that thread.
     ($thread_idx:expr, $query_queue:expr, $invalidate_send:expr, $invalidate_recv:expr) => {
         let cache = unsafe {
-            &mut (*(CACHES_PER_THREAD as *mut Vec<Cache<u16, ()>>))[$thread_idx]
+            &mut *(CACHES_PER_THREAD[$thread_idx] as *mut Cache<u16, ()>)
         };
         loop {
             if let Some(txn_idx) = $query_queue.pop() {
@@ -585,14 +585,14 @@ pub fn per_thread_bench(c: &mut Criterion) {
     // Perform the benchmark one by one for all chosen thread counts.
     for thread_count in THREAD_COUNTS.iter() {
         // Prepare the caches
-        let mut caches = Vec::with_capacity(*thread_count);
-        for _ in 0..*thread_count {
+        for i in 0..*thread_count {
             let mut cache = Cache::new(CACHE_SIZE_TOTAL / *thread_count);
             fill_generic!(cache);
-            caches.push(cache);
+            unsafe {
+                CACHES_PER_THREAD[i] = Box::into_raw(Box::new(cache));
+            }
         }
         unsafe {
-            CACHES_PER_THREAD = Box::into_raw(Box::new(caches));
             // Also prepare the write lock
             PER_THREAD_MOD_LOCK = Box::into_raw(Box::new(Mutex::new(())));
         }
@@ -657,7 +657,9 @@ pub fn per_thread_bench(c: &mut Criterion) {
         );
         // Free the caches and the write lock
         unsafe {
-            Box::from_raw(CACHES_PER_THREAD as *mut Vec<Cache<u16, ()>>);
+            for i in 0..*thread_count {
+                Box::from_raw(CACHES_PER_THREAD[i] as *mut Cache<u16, ()>);
+            }
             Box::from_raw(PER_THREAD_MOD_LOCK as *mut Mutex<()>);
         }
     }
