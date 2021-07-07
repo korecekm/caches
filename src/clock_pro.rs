@@ -50,7 +50,7 @@
 //
 // A *hot record* may only change state to a cold one, when hand_hot reaches it unreferenced.
 //
-// A *non-resident cold record* may be removed fully by either hand_test or hand_hot. It its key
+// A *non-resident cold record* may be removed fully by either hand_test or hand_hot. If its key
 // gets reaccessed (reinserted), it turns straight into a hot record.
 
 use std::collections::HashMap;
@@ -698,8 +698,11 @@ impl<K: Clone + Eq + Hash, V> CLOCKProCache<K, V> {
 
 impl<K, V> Drop for Node<K, V> {
     fn drop(&mut self) {
-        unsafe {
-            Box::from_raw(self.val as *mut V);
+        // If the record is resident, we need to free the value.
+        if !self.val.is_null() {
+            unsafe {
+                Box::from_raw(self.val as *mut V);
+            }
         }
     }
 }
@@ -707,8 +710,10 @@ impl<K, V> Drop for Node<K, V> {
 impl<K: Clone + Eq + Hash, V> Drop for CLOCKProCache<K, V> {
     fn drop(&mut self) {
         if !self.hand_cold.is_null() {
+            // Iterate through all nodes starting with hand_cold and free them.
             let mut current_ptr =
                 unsafe { (*Box::from_raw(self.hand_cold as *mut Node<K, V>)).next };
+            // (up until we reach the hand_cold pointer again)
             while current_ptr != self.hand_cold {
                 current_ptr = unsafe { (*Box::from_raw(current_ptr as *mut Node<K, V>)).next };
             }
