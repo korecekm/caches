@@ -1,3 +1,14 @@
+// This is an implementation of a cache data structure using the Least Recently Used (LRU)
+// replacement policy. As the name suggests, when the cache is full and a new record is being
+// inserted into it, the strategy evicts the record that has been accessed the least recently.
+//
+// We implement this with a queue - a doubly linked list. New records are pushed to the list's
+// front, on reaccess, an element moves back to the front. Records are evicted from the back.
+//
+// As with any cache data structure, we also keep a hash map (called `map`) that stores pointers to
+// the list's nodes for the records' keys, to implement operations in a convenient and
+// constant-time way
+
 use crate::list::{DLList, DLNode};
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -10,6 +21,7 @@ pub struct LRUCache<K: Clone + Eq + Hash, V> {
 }
 
 impl<K: Clone + Eq + Hash, V> LRUCache<K, V> {
+    /// Create a new cache of given capacity, with the LRU replacement policy.
     pub fn new(capacity: usize) -> Self {
         Self {
             capacity,
@@ -44,6 +56,11 @@ impl<K: Clone + Eq + Hash, V> LRUCache<K, V> {
         self.list.size += 1;
     }
 
+    /// Evicts a record with given key from the cache.
+    pub fn evict(&mut self, key: &K) {
+        self.extract(key);
+    }
+
     /// Like get, but removing the record from the cache.
     /// This is useful when this LRU is a thread-local cache and the thread
     /// currently has write privilege to a global transactional cache, ie if
@@ -68,6 +85,7 @@ mod test {
 
     #[test]
     fn simple() {
+        // Basic test of the semantics of the LRU cache
         let mut lru = LRUCache::new(3);
         assert_eq!(lru.get(&1), None);
         lru.insert(1, 'A');
