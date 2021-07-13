@@ -9,9 +9,9 @@
 // All elements are divided into two (imaginary) linked lists, L1 and L2. L1 is a list for
 // "recently" seen, but just once, L2 holds records which we have seen at lest twice "recently"
 // (since the time when they were last uncached). In reality, these imaginary lists are further
-// split into T1, B1 and T2, B2 (T as Top, B as Bottom). All for lists only really hold keys, but
-// the DS only holds (boxed) values for the records of keys inside T1 and B1. All records are held
-// inside `map`, a hash map of `Record`s, you may notice that, T1 and T2 Records also have an
+// split into T1, B1 and T2, B2 (T as Top, B as Bottom). All four lists only really hold keys, but
+// the DS only holds (boxed) values for the records of keys inside T1 and T2. All records are held
+// inside `map`, a hash map of `Record`s, you may notice that T1 and T2 Records also have an
 // asociated boxed value.
 //
 // Both (each) L1 and L2 have a capacity of the one given to the whole data structure, while we (as

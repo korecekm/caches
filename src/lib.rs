@@ -1,5 +1,5 @@
 // Our doubly-linked list
-pub mod list;
+mod list;
 
 // The cache replacement data structures
 pub mod rr;
@@ -18,3 +18,5 @@ pub mod bptree_hash_map;
 pub mod trie_hashmap;
 
 // Special concurrent cache implementations
+pub mod lru_associative;
+pub mod lru_transactional;

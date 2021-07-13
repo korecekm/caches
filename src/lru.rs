@@ -30,9 +30,11 @@ impl<K: Clone + Eq + Hash, V> LRUCache<K, V> {
         }
     }
 
+    /// Returns a reference to the value cached with this key, if cached.
     pub fn get<'a>(&'a mut self, key: &K) -> Option<&'a V> {
         match self.map.get_mut(key) {
             Some(node) => unsafe {
+                // Reaccessed element gets moved to the list's front
                 node.as_mut().move_to_front(&mut self.list);
                 Some(&node.as_ref().elem.1)
             },
@@ -40,16 +42,22 @@ impl<K: Clone + Eq + Hash, V> LRUCache<K, V> {
         }
     }
 
-    /// Expects that key isn't already present!
+    /// Submit this key-value pair for caching.
+    /// The key must not yet be present in the cache!
     pub fn insert(&mut self, key: K, value: V) {
         if self.list.size == self.capacity {
+            // If a record needs to be evicted, we evict the one at the list's
+            // tail
             if let Some((k, _)) = self.list.pop_back() {
                 self.map.remove(&k);
             }
         }
+        // Create the new node for this record.
         let mut node =
             NonNull::new(Box::into_raw(Box::new(DLNode::new((key.clone(), value))))).unwrap();
+        // First, insert the pointer to the node into our hash map
         self.map.insert(key, node);
+        // Finally, insert the node to the list's front
         unsafe {
             self.list.insert_head(node.as_mut() as *mut DLNode<_>);
         }
@@ -82,6 +90,7 @@ impl<K: Clone + Eq + Hash, V> LRUCache<K, V> {
 #[cfg(test)]
 mod test {
     use super::LRUCache;
+    use rand::{thread_rng, Rng};
 
     #[test]
     fn simple() {
@@ -110,6 +119,8 @@ mod test {
 
     #[test]
     fn extract_simple() {
+        // Basic test that checks the behavior of the `extract` function (and
+        // transitively `evict` too)
         let mut lru = LRUCache::new(5);
         assert_eq!(lru.extract(&7), None);
         for i in 1..11 {
@@ -128,5 +139,41 @@ mod test {
         }
         assert_eq!(lru.list.size, 0);
         assert_eq!(lru.list.pop_back(), None);
+    }
+
+    #[test]
+    fn smoke_test() {
+        // Doesn't test the cache semantics, only makes sure the cache always
+        // stays at the limit number of elements
+        let mut rng = thread_rng();
+        let mut cache = LRUCache::new(25);
+        // First, fill the cache
+        for i in 0..25 {
+            cache.insert(i, i);
+        }
+
+        // Now access (and insert) records at random and make sure the number
+        // cached ones stays at 25
+        for i in 0..10000 {
+            let key = rng.gen_range(0, 200);
+            let record = cache.get(&key);
+            // If the record isn't yet present, insert it
+            if record.is_none() {
+                cache.insert(key, key);
+            }
+
+            if i % 100 == 0 {
+                // Check that there are exactly 25 records
+                let mut count = 0;
+                for k in 0..200 {
+                    let record = cache.get(&k);
+                    if let Some(val) = record {
+                        assert_eq!(val, &k);
+                        count += 1;
+                    }
+                }
+                assert_eq!(count, 25);
+            }
+        }
     }
 }
