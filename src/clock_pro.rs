@@ -62,8 +62,8 @@ struct Node<K, V> {
     prev: *const Node<K, V>,
     next: *const Node<K, V>,
     key: K,
-    // The record may be non-resident, in which case it is null
-    val: *const V,
+    // The record may be non-resident, therefore Option
+    val: Option<Box<V>>,
     // Flags by lsb index:
     // 0: hot
     // 1: referenced (when a record gets reaccessed)
@@ -82,7 +82,7 @@ pub struct CLOCKProCache<K: Clone + Eq + Hash, V> {
     hot_count: usize,
     resident_cold_count: usize,
     nonresident_cold_count: usize,
-    // hand_cold is only null when the cache is empty
+    // hand_cold is only None when the cache is empty
     hand_cold: *const Node<K, V>,
     hand_hot: *const Node<K, V>,
     hand_test: *const Node<K, V>,
@@ -95,7 +95,7 @@ impl<K, V> Node<K, V> {
             prev: ptr::null(),
             next: ptr::null(),
             key,
-            val: Box::into_raw(Box::new(value)),
+            val: Some(Box::new(value)),
             // Flags for cold record in its test period
             flags: 0b100,
         }
@@ -140,7 +140,7 @@ impl<K, V> Node<K, V> {
 
     /// Does this node also hold the value for its key?
     fn is_resident(&self) -> bool {
-        !self.val.is_null()
+        self.val.is_some()
     }
 
     /// Is the record in its test period?
@@ -204,19 +204,6 @@ impl<K: Clone + Eq + Hash, V> CLOCKProCache<K, V> {
 
     /// Returns a reference to the value for given key, if it is cached.
     pub fn get<'a>(&'a mut self, key: &K) -> Option<&'a V> {
-        self.get_value_ptr(key).map(|val_ptr| unsafe { &*val_ptr })
-    }
-
-    /// Returns a mutable reference to the value for given key, if it is cached.
-    pub fn get_mut<'a>(&'a mut self, key: &K) -> Option<&'a mut V> {
-        self.get_value_ptr(key)
-            .map(|val_ptr| unsafe { &mut *(val_ptr as *mut V) })
-    }
-
-    /// A generic function that tries retrieving the ptr in which we store the
-    /// value for received key (also performing a cache hit in case it's
-    /// present).
-    fn get_value_ptr(&mut self, key: &K) -> Option<*const V> {
         if let Some(node_ptr) = self.map.get(key) {
             let node_mut = unsafe { &mut *(*node_ptr as *mut Node<K, V>) };
             // The first reaccess makes cold_capacity increase
@@ -225,12 +212,12 @@ impl<K: Clone + Eq + Hash, V> CLOCKProCache<K, V> {
             }
             // On reaccess, we only mark the record as referenced
             node_mut.set_referenced(true);
-            if node_mut.val.is_null() {
+            if let Some(boxed_val) = &node_mut.val {
+                // Resident record
+                Some(&*boxed_val)
+            } else {
                 // Non-resident record
                 None
-            } else {
-                // Resident record
-                Some(node_mut.val)
             }
         } else {
             // No record for given key
@@ -266,7 +253,7 @@ impl<K: Clone + Eq + Hash, V> CLOCKProCache<K, V> {
 
         // Now either insert a new record, or reinsert the found one as hot
         if let Some(node) = record {
-            node.val = Box::into_raw(Box::new(value));
+            node.val = Some(Box::new(value));
             self.reinsert_as_hot(node);
             self.hot_count += 1;
         } else {
@@ -363,10 +350,7 @@ impl<K: Clone + Eq + Hash, V> CLOCKProCache<K, V> {
                 if self.nonresident_cold_count >= self.capacity {
                     self.trigger_hand_test();
                 }
-                unsafe {
-                    Box::from_raw(hand.val as *mut V);
-                }
-                hand.val = ptr::null();
+                hand.val = None;
                 self.resident_cold_count -= 1;
                 self.nonresident_cold_count += 1;
                 evicted = true;
@@ -443,36 +427,36 @@ impl<K: Clone + Eq + Hash, V> CLOCKProCache<K, V> {
         debug_assert!(self.hot_count >= 1);
         // Move the hand forward until reaching another hot page.
         // Also act like `hand_test` on cold records.
-        unsafe {
-            self.hand_hot = (*self.hand_hot).next;
-            while !(*self.hand_hot).is_hot() {
-                // hand_test behavior:
-                let hand = &mut *(self.hand_hot as *mut Node<K, V>);
-                if hand.is_resident() {
-                    // Resident cold record. End its test period and move on to the
-                    // next node.
-                    // Additionally, if a cold page passes its test period without
-                    // a reaccess, `cold_capacity` decreases.
-                    if hand.is_test() {
-                        if !hand.was_referenced() {
-                            self.decrement_cold_capacity();
-                        }
-                        hand.set_test(false);
+        self.hand_hot = unsafe { (*self.hand_hot).next };
+        while unsafe { !(*self.hand_hot).is_hot() } {
+            // hand_test behavior:
+            let hand = unsafe { &mut *(self.hand_hot as *mut Node<K, V>) };
+            if hand.is_resident() {
+                // Resident cold record. End its test period and move on to the
+                // next node.
+                // Additionally, if a cold page passes its test period without
+                // a reaccess, `cold_capacity` decreases.
+                if hand.is_test() {
+                    if !hand.was_referenced() {
+                        self.decrement_cold_capacity();
                     }
-                    self.hand_hot = hand.next;
-                } else {
-                    // If hand_test would get invalidated, move it forward
-                    if self.hand_test == self.hand_hot {
-                        self.hand_test = hand.next;
-                    }
-                    // Remove the non-resident cold record:
-                    self.hand_hot = hand.next;
-                    self.nonresident_cold_count -= 1;
-                    // Remove from linked list
-                    hand.remove();
-                    // Remove from hash map
-                    self.map.remove(&hand.key);
-                    // free
+                    hand.set_test(false);
+                }
+                self.hand_hot = hand.next;
+            } else {
+                // If hand_test would get invalidated, move it forward
+                if self.hand_test == self.hand_hot {
+                    self.hand_test = hand.next;
+                }
+                // Remove the non-resident cold record:
+                self.hand_hot = hand.next;
+                self.nonresident_cold_count -= 1;
+                // Remove from linked list
+                hand.remove();
+                // Remove from hash map
+                self.map.remove(&hand.key);
+                // free
+                unsafe {
                     Box::from_raw(hand);
                 }
             }
@@ -546,171 +530,13 @@ impl<K: Clone + Eq + Hash, V> CLOCKProCache<K, V> {
             self.cold_capacity -= 1;
         }
     }
-
-    /// Forces the eviction of a record, if it is present (internally, we turn
-    /// it into a non-resident record, so that if it's reinserted soon later,
-    /// it has high priority).
-    /// This is a function for special use cases like ones, where the
-    /// synchronization between threads is implemented via invalidation
-    /// broadcasting.
-    pub fn evict(&mut self, key: &K) {
-        // We need to keep several invariants
-        // * Firstly all the global CLOCK-Pro invariants, including hand_cold
-        // only being null if cache is empty (so if the last resident record
-        // were to be made non-resident, the whole cache is evicted instead)
-        // * Additionally, we will have an invariant saying that if resident
-        // cold count is under 2, there are no hot records anymore (ie. when
-        // the number of resident colds gets low and any hot records exist, we
-        // trigger hand_hot)
-        if let Some(node_ptr) = self.map.get(key) {
-            // Only evict a resident record
-            if unsafe { !(**node_ptr).is_resident() } {
-                return;
-            }
-            // Now call the right utility function
-            let node_mut = unsafe {
-                &mut *(*node_ptr as *mut Node<K, V>)
-            };
-            if node_mut.is_hot() {
-                self.evict_hot(node_mut);
-            } else {
-                self.evict_cold(node_mut);
-            }
-            if self.nonresident_cold_count >= self.capacity {
-                self.trigger_hand_test();
-            }
-        }
-    }
-
-    /// Utility function used by `evict` to evict given hot record
-    fn evict_hot(&mut self, node: &mut Node<K, V>) {
-        // Change the hot record to a nonresident cold one
-        node.set_hot(false);
-        unsafe {
-            Box::from_raw(node.val as *mut V);
-        }
-        node.val = ptr::null();
-        // Update the counters
-        self.hot_count -= 1;
-        self.nonresident_cold_count += 1;
-        // If `hand_hot` points to this node, update it
-        if self.hand_hot == node {
-            if self.hot_count > 0 {
-                self.move_hand_hot_forward();
-            } else {
-                self.hand_hot = ptr::null();
-            }
-        }
-    }
-
-    /// Utility function used by `evict` to evict given cold record.
-    /// This is the course of action we take:
-    /// * If there is just this one resident, we evict all nodes
-    /// * If there are just 2 resident colds, we try to make a hot record into
-    /// a cold one and only then turn this one into a non-resident
-    /// * Otherwise, we don't need to make other adjustments then evict the
-    /// value
-    /// Additionally, we need to move hand_cold if it was pointing to this node
-    fn evict_cold(&mut self, node: &mut Node<K, V>) {
-        // If this is the last resident record, remove all
-        if self.resident_cold_count == 1 {
-            self.evict_all();
-            return;
-        }
-        // If resident cold count drops below two, try making a hot record into
-        // a cold one
-        if self.resident_cold_count == 2 {
-            self.decrease_hot_count();
-        }
-        // Perform the 'eviction' itself
-        unsafe {
-            Box::from_raw(node.val as *mut V)
-        };
-        node.val = ptr::null();
-        // Update counters
-        self.resident_cold_count -= 1;
-        self.nonresident_cold_count += 1;
-        // If `hand_cold` points to this node, update it
-        if self.hand_cold == node {
-            self.move_hand_cold_forward();
-        }
-    }
-
-    /// Special utility function for `evict_cold`, which tries to turn one hot
-    /// record into a cold one (this is not equivalent to what
-    /// `trigger_hand_hot` does)
-    fn decrease_hot_count(&mut self) {
-        if self.hot_count == 0 {
-            return;
-        }
-        let hot_count = self.hot_count;
-        if hot_count > 1 {
-            // There are multiple hot records and this can be handled by
-            // triggering hand_hot
-            while hot_count == self.hot_count {
-                self.trigger_hand_hot();
-            }
-        } else {
-            // Only one hot record. Turn that into a cold one and make hand_hot
-            // null
-            let hand_hot = unsafe {
-                &mut *(self.hand_hot as *mut Node<K, V>)
-            };
-            hand_hot.set_hot(false);
-            hand_hot.set_test(true);
-            self.hot_count = 0;
-            self.resident_cold_count += 1;
-        }
-    }
-
-    /// Utility function for `evict_cold`, which removes all nodes from the
-    /// cache and sets pointers and counter to null and 0
-    fn evict_all(&mut self) {
-        let mut current_ptr = unsafe {
-            (*Box::from_raw(self.hand_cold as *mut Node<K, V>)).next
-        };
-        while current_ptr != self.hand_cold {
-            current_ptr = unsafe {
-                (*Box::from_raw(current_ptr as *mut Node<K, V>)).next
-            };
-        }
-        self.hand_cold = ptr::null();
-        // (this shouldn't be set in the first place with the intended usage)
-        self.hand_hot = ptr::null();
-        self.hand_test = ptr::null();
-        self.hot_count = 0;
-        self.resident_cold_count = 0;
-        self.nonresident_cold_count = 0;
-    }
-
-    /// Moves `hand_hot` forward to the nearest hot record.
-    fn move_hand_hot_forward(&mut self) {
-        unsafe {
-            loop {
-                self.hand_hot = (*self.hand_hot).next;
-                if (*self.hand_hot).is_hot() {
-                    break;
-                }
-            }
-        }
-    }
-}
-
-impl<K, V> Drop for Node<K, V> {
-    fn drop(&mut self) {
-        // If the record is resident, we need to free the value.
-        if !self.val.is_null() {
-            unsafe {
-                Box::from_raw(self.val as *mut V);
-            }
-        }
-    }
 }
 
 impl<K: Clone + Eq + Hash, V> Drop for CLOCKProCache<K, V> {
     fn drop(&mut self) {
         if !self.hand_cold.is_null() {
-            // Iterate through all nodes starting with hand_cold and free them.
+            // Iterate through all nodes starting with hand_cold (which is
+            // never null in a non empty CLOCKPro) and free them.
             let mut current_ptr =
                 unsafe { (*Box::from_raw(self.hand_cold as *mut Node<K, V>)).next };
             // (up until we reach the hand_cold pointer again)
@@ -730,7 +556,8 @@ mod test {
 
     #[test]
     fn simple() {
-        // A simple test of the cache's semantics
+        // A simple test of the cache's semantics.
+        // We just perform get and insert operations and
         let mut cache = CLOCKProCache::new(6);
         for i in 0..6 {
             cache.insert(i, 2 * i);
@@ -843,196 +670,6 @@ mod test {
         );
     }
 
-    #[test]
-    fn get_mut_simple() {
-        // A basic test to check if get_mut works how one would expect
-        let mut cache = CLOCKProCache::new(6);
-        for i in 0..6 {
-            cache.insert(i, 2 * i);
-        }
-        let elem = cache.get_mut(&0).unwrap();
-        assert_eq!(*elem, 0);
-        *elem = 50;
-        assert_eq!(cache.get(&4), Some(&8));
-        *cache.get_mut(&2).unwrap() = 100;
-        cache.insert(6, 12);
-        check_clock_content(
-            &cache,
-            vec![
-                (2, false, true),
-                (3, false, true),
-                (4, false, true),
-                (5, false, true),
-                (6, false, true),
-                (0, true, true),
-                (1, false, false),
-            ],
-        );
-        cache.insert(7, 14);
-        assert_eq!(cache.get(&0), Some(&50));
-        check_clock_content(
-            &cache,
-            vec![
-                (4, false, true),
-                (5, false, true),
-                (6, false, true),
-                (2, true, true),
-                (7, false, true),
-                (0, true, true),
-                (1, false, false),
-                (3, false, false),
-            ],
-        );
-        assert_eq!(cache.get(&2), Some(&100));
-    }
-
-    #[test]
-    fn evict_test() {
-        // A basic test for the `evict` method
-        let mut cache = CLOCKProCache::new(6);
-        for i in 0..6 {
-            cache.insert(i, i);
-        }
-        assert_eq!(cache.get(&0), Some(&0));
-        assert_eq!(cache.get(&4), Some(&4));
-        assert_eq!(cache.get(&2), Some(&2));
-        cache.insert(6, 6);
-        cache.insert(7, 7);
-        assert_eq!(cache.get(&0), Some(&0));
-        cache.insert(8, 8);
-        assert_eq!(cache.get(&7), Some(&7));
-        for i in 9..17 {
-            cache.insert(i, i);
-        }
-        check_clock_content(
-            &cache,
-            vec![
-                (15, false, true),
-                (16, false, true),
-                (2, true, true),
-                (7, false, true),
-                (0, true, true),
-                (4, true, true),
-                (9, false, false),
-                (10, false, false),
-                (11, false, false),
-                (12, false, false),
-                (13, false, false),
-                (14, false, false),
-            ],
-        );
-
-        // Now the cache is in the state we want it in, let's test evictions
-        cache.evict(&15);
-        // Non-resident eviction does nothing
-        cache.evict(&11);
-        cache.evict(&1);
-        check_clock_content(
-            &cache,
-            vec![
-                (16, false, true),
-                (2, true, true),
-                (7, false, true),
-                (0, true, true),
-                (4, true, true),
-                (10, false, false),
-                (11, false, false),
-                (12, false, false),
-                (13, false, false),
-                (14, false, false),
-                (15, false, false),
-            ],
-        );
-        cache.evict(&7);
-        cache.evict(&12);
-        check_clock_content(
-            &cache,
-            vec![
-                (16, false, true),
-                (2, false, true),
-                (7, false, false),
-                (0, true, true),
-                (4, true, true),
-                (11, false, false),
-                (12, false, false),
-                (13, false, false),
-                (14, false, false),
-                (15, false, false),
-            ],
-        );
-        cache.evict(&0);
-        check_clock_content(
-            &cache,
-            vec![
-                (16, false, true),
-                (2, false, true),
-                (7, false, false),
-                (0, false, false),
-                (4, true, true),
-                (12, false, false),
-                (13, false, false),
-                (14, false, false),
-                (15, false, false),
-            ],
-        );
-        cache.evict(&16);
-        check_clock_content(
-            &cache,
-            vec![
-                (2, false, true),
-                (7, false, false),
-                (0, false, false),
-                (4, false, true),
-                (13, false, false),
-                (14, false, false),
-                (15, false, false),
-                (16, false, false),
-            ],
-        );
-        cache.evict(&2);
-        check_clock_content(
-            &cache,
-            vec![
-                (4, false, true),
-                (14, false, false),
-                (15, false, false),
-                (16, false, false),
-                (2, false, false),
-                (7, false, false),
-                (0, false, false),
-            ],
-        );
-        cache.insert(17, 17);
-        cache.evict(&4);
-        check_clock_content(
-            &cache,
-            vec![
-                (17, false, true),
-                (4, false, false),
-                (15, false, false),
-                (16, false, false),
-                (2, false, false),
-                (7, false, false),
-                (0, false, false),
-            ],
-        );
-        cache.evict(&17);
-        assert!(cache.hand_cold.is_null());
-        assert_eq!(cache.hot_count, 0);
-        assert_eq!(cache.resident_cold_count, 0);
-        assert_eq!(cache.nonresident_cold_count, 0);
-        // Make sure insertions work normally again
-        cache.insert(18, 18);
-        cache.insert(19, 19);
-        check_clock_content(
-            &cache,
-            vec![
-                (18, false, true),
-                (19, false, true),
-            ],
-        );
-    }
-
     /// Checks that the constents of the cache's linked list are what we expect.
     /// The given `expect` vector gives tuples of the expected values for
     /// * The key in the record
@@ -1094,23 +731,69 @@ mod test {
             cache.insert(i, i);
         }
 
-        for _ in 0..1000 {
+        for i in 0..10000 {
             let key = rng.gen_range(0, 200);
             let record = cache.get(&key);
             if record.is_none() {
                 cache.insert(key, key);
+                check_clock_valid(&cache);
             }
 
-            // Check that there are exactly 25 records
-            let mut count = 0;
-            for k in 0..200 {
-                let record = cache.get(&k);
-                if let Some(val) = record {
-                    assert_eq!(val, &k);
-                    count += 1;
+            if i % 100 == 0 {
+                // Check that there are exactly 25 records
+                let mut count = 0;
+                for k in 0..200 {
+                    let record = cache.get(&k);
+                    if let Some(val) = record {
+                        assert_eq!(val, &k);
+                        count += 1;
+                    }
                 }
+                assert_eq!(count, 25);
             }
-            assert_eq!(count, 25);
         }
+    }
+
+    /// Checks that the keys we access when iterating from `hand_cold` forward
+    /// corresponds to the iteration backwards, i.e.
+    fn check_clock_valid<K>(cache: &CLOCKProCache<K, K>)
+    where
+        K: Clone + Eq + Hash + Debug,
+    {
+        // We will store the order of keys into key_vec
+        let mut key_vec = Vec::new();
+        // Iterate from hand_cold forward
+        let mut current = unsafe { &*cache.hand_cold };
+        loop {
+            // Each time, push current key
+            key_vec.push(current.key.clone());
+
+            current = unsafe { &*current.next };
+            // When we've reached hand_cold again, stop
+            if current as *const Node<K, K> == cache.hand_cold {
+                break;
+            }
+        }
+        // Check that also the size of our util hash map meets what we've
+        // observed
+        assert_eq!(cache.map.len(), key_vec.len());
+        // Now check the reverse order
+        check_clock_content_reverse(cache, &key_vec);
+    }
+
+    /// Receives a reference to our cache and to a vec of keys in the order
+    /// observed iterating from hand_cold forward.
+    /// Checks that the keys we will observe going from hand_cold backwards
+    /// correspond correctly to the expected Vec.
+    fn check_clock_content_reverse<K>(cache: &CLOCKProCache<K, K>, expect: &Vec<K>)
+    where
+        K: Clone + Eq + Hash + Debug,
+    {
+        let mut current = unsafe { &*cache.hand_cold };
+        for expect_key in expect.iter().rev() {
+            current = unsafe { &*current.prev };
+            assert_eq!(current.key, *expect_key);
+        }
+        assert_eq!(current as *const Node<K, K>, cache.hand_cold);
     }
 }
