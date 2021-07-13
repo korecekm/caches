@@ -17,5 +17,5 @@ crossbeam = "0.8.1"
 concread = { git = "https://github.com/kanidm/concread.git", rev = "72430fb42a56cf5dd6b4a0e5ce0bb62f607a6db1" }
 
 [[bench]]
-name = "concurrent"
+name = "single_thread"
 harness = false
