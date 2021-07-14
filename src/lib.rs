@@ -1,5 +1,5 @@
 // Our doubly-linked list
-mod list;
+pub mod list;
 
 // The cache replacement data structures
 pub mod rr;

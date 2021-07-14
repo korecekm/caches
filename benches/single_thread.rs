@@ -150,7 +150,7 @@ macro_rules! generic_bench {
         $(
             // Use the cache size as the input parameter for our benchmark
             $bench_group.bench_with_input(
-                BenchmarkId::from_parameter($cache_size),
+                BenchmarkId::from_parameter(format!("{}/{}", WORKLOAD_FILENAME, $cache_size)),
                 &$cache_size,
                 |b, _| {
                     // Create an instance of our cache using the `creation`
@@ -344,6 +344,8 @@ fn arc_bench(c: &mut Criterion) {
 }
 
 
+/// A mock cache-like data structure that does nothing in its operations.
+/// Serves us to find out what overhead the benchmark alone brings.
 struct NullCache<K, V> {
     _phantom_k: PhantomData<K>,
     _phantom_v: PhantomData<V>,

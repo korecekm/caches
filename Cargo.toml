@@ -12,10 +12,20 @@ ahash = "0.6.2"
 
 [dev-dependencies]
 criterion = "0.3"
-concache = "0.2.1"
 crossbeam = "0.8.1"
-concread = { git = "https://github.com/kanidm/concread.git", rev = "72430fb42a56cf5dd6b4a0e5ce0bb62f607a6db1" }
 
 [[bench]]
+name = "cache_parameter_comparison"
+harness = false
+[[bench]]
+name = "hit_rate"
+harness = false
+[[bench]]
 name = "single_thread"
+harness = false
+[[bench]]
+name = "concurrent"
+harness = false
+[[bench]]
+name = "hashmaps_bench"
 harness = false
