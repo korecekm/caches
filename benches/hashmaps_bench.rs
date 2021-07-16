@@ -136,7 +136,7 @@ pub fn null_bench(c: &mut Criterion) {
         let query_count = QUERY_COUNTS[bench_idx];
         group.bench_with_input(
             BenchmarkId::from_parameter(query_count),
-            &query_count,
+            &bench_idx,
             |b, &idx| {
                 b.iter_batched(
                     || unsafe { &*QUERIES_STANDARD[idx] },

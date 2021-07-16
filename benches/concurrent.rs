@@ -1,3 +1,23 @@
+// This benchmark measures the in-memory performance of our simulations of different strategies for
+// making a cache concurrent. We call these LOCK, ASSOCIATIVE, PER THREAD and TRANSACTIONAL. the
+// single_thread benchmark provides a very similar measurement of the performance of our cache data
+// structures used sequentially.
+// 
+// The structure of this source file attempts to make the code as readable as possible, while also
+// avoiding unnecessary code repetition. Naturally, the measurements for the different concurrent
+// strategies use a very similar setup. In each, we make sure we have our workload prepared in the
+// static WORKLOAD vector, we prepare our static structs that hold the cache(s), running the whole
+// workload on them once to fill them, so that the first iteration of the measurement doesn't start
+// with an empty cache, and then we spawn worker threads. After spawning them, we start measuring
+// time and also start sending them tasks in the form of indexes of the WORKLOAD vector. Once the
+// workload is finished and the threads finish their execution, we stop measuring the time.
+// 
+// Because of these similarities, we may use the `generic_bench` macro, which takes care of most of
+// this. It also needs the `prepare_cache_struct`, which provides for the initiation of the
+// structures needed four our measurement (the different types of caches). All the other strategy-
+// specific code is located in separate modules for the strategies. These specifics are described
+// in the comments at the beginning of each of these modules.
+
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::ptr;
@@ -51,11 +71,17 @@ macro_rules! perform_search_only_generic {
     };
 }
 
+// Receives a reference to the concurrent 'query queue', that we use to send
+// our workload through, and the join handles of the worker threads.
+// The macro expands into sending the whole workload through the queue and
+// measuring how long it takes the worker threads to perform all the
+// transactions, by joining them after the whole workload is sent.
 macro_rules! send_workload {
     ($query_queue:expr, $join_handles:expr) => {{
         let workload_size = unsafe {
             (*WORKLOAD).len()
         };
+        // Start measuring the time.
         let start = Instant::now();
         // Send all indexes to transactions in `WORKLOAD`
         for txn_idx in 0..workload_size {
@@ -70,12 +96,20 @@ macro_rules! send_workload {
         for handle in $join_handles {
             handle.join().unwrap();
         }
+        // "return" the time the measurement took
         start.elapsed()
     }}
 }
 
+// This macro uses identifiers for each of our strategies to expand to the
+// right version of struct initiation for our measurements. It receives the
+// thread count of the current measurement and the variable where the struct
+// shall be initiated.
+// The 'initiation' includes filling the cache(s) with data, which we do before
+// starting the measurements.
 macro_rules! prepare_cache_struct {
     (lock $thread_count:expr, $struct_variable:expr) => {
+        // The LOCK strategy uses a cache behind a single Mutex
         let cache = Mutex::new(Cache::new(CACHE_SIZE_TOTAL));
         fill_generic!(*cache.lock().unwrap());
         unsafe {
@@ -83,8 +117,11 @@ macro_rules! prepare_cache_struct {
         }
     };
     (assoc $thread_count:expr, $struct_variable:expr) => {
+        // We create an associative cache with the number of slots set to three
+        // times the thread count.
         let cache = CacheAssoc::new(CACHE_SIZE_TOTAL, $thread_count * 3);
         let mut unique_guard = cache.generate_unique_access_guard();
+        // We use a unique access guard to fill the cache in this case.
         fill_generic!(unique_guard);
         drop(unique_guard);
         unsafe {
@@ -92,8 +129,11 @@ macro_rules! prepare_cache_struct {
         }
     };
     (perthread $thread_count:expr, $struct_variable:expr) => {
+        // In PER THREAD, the caches are stored inside a vector. Each thread
+        // has its own cache, the caches have uniform capacities.
         let mut caches_per_thread = Vec::with_capacity($thread_count);
         for _ in 0..$thread_count {
+            // Each cache gets initiated and filled separately
             let mut cache = Cache::new(CACHE_SIZE_TOTAL / $thread_count);
             fill_generic!(cache);
             caches_per_thread.push(cache);
@@ -103,8 +143,11 @@ macro_rules! prepare_cache_struct {
         }
     };
     (txnal $thread_count:expr, $struct_variable:expr) => {
+        // The TRANSACTIONAL cache:
         let cache_txnal = CacheTxnal::new(CACHE_SIZE_TOTAL);
         let mut write_txn = cache_txnal.write();
+        // We fill the cache by obtaining write privilege and committing the
+        // filled cache state
         fill_generic!(write_txn);
         write_txn.commit();
         unsafe {
@@ -113,15 +156,35 @@ macro_rules! prepare_cache_struct {
     }
 }
 
+// This macro expands to the 'skeleton' of any of our measurements. The
+// benchmark functions in the respective strategy modules need to provide the
+// right parameters for it.
 macro_rules! generic_bench {
+    // The parameters:
+    // * criterion: mutable reference to the global Criterion object
+    // * bench_name: The name of this measurement that will show in the
+    //   generated results by Criterion
+    // * strategy_id: the identifier of this strategy for the
+    //   `prepare_cache_struct` macro
+    // * struct_variable: The static variable where the cache structure will be
+    //   genereated
+    // * struct_type: The type of that variable, to be able to drop it properly
+    // * iteration_function: The function that performs an iteration of the
+    //   measurement itself is specific to the strategy.
     ($criterion:expr, $bench_name:expr, $strategy_id:ident, $struct_variable:expr, $struct_type:ty, $iteration_function:expr) => {
+        // Make sure the workload is prepared in the `WORKLOAD` static vector
         prepare_data();
+        // Prepare the Criterion benchmark group
         let mut group = $criterion.benchmark_group($bench_name);
         group.sample_size(10);
 
+        // For each thread count we chose to measure, perform the measurement
         for thread_count in THREAD_COUNTS.iter() {
+            // Prepare the cache structure that will be used in the iterations
+            // of the measurement itself
             prepare_cache_struct!($strategy_id *thread_count, $struct_variable);
 
+            // Run the Criterion benchmark
             group.bench_with_input(
                 BenchmarkId::from_parameter(format!("{}/{}", WORKLOAD_FILENAME, thread_count)),
                 thread_count,
@@ -129,6 +192,11 @@ macro_rules! generic_bench {
                     b.iter_custom(|iters| {
                         let mut duration = Duration::from_micros(0);
                         for _ in 0..iters {
+                            // Each iteration, which is a strategy-specific
+                            // process defined in the respective modules,
+                            // returns the time it took. This needs to be
+                            // summed up for the value for all iterations,
+                            // returned to Criterion
                             duration += ($iteration_function)(*thread_count);
                         }
                         duration
@@ -144,7 +212,9 @@ macro_rules! generic_bench {
     };
 }
 
-// The LOCK strategy
+// The LOCK strategy:
+// This uses one cache behind a Mutex. Each worker thread needs to lock the
+// mutex to access the cache, when performing transactions.
 mod lock {
     use super::{WORKLOAD, prepare_data, THREAD_COUNTS, WORKLOAD_FILENAME, CACHE_SIZE_TOTAL};
     use crossbeam::queue::ArrayQueue;
@@ -183,6 +253,7 @@ mod lock {
         };
     }
 
+    // One iteration of the measurement.
     fn perform_measurement_iteration(thread_count: usize) -> Duration {
         // First, prepare the queue to send the workload through
         let workload_size = unsafe { (*WORKLOAD).len() };
@@ -197,9 +268,13 @@ mod lock {
             join_handles.push(join_handle);
         }
 
+        // Expand the macro that sends the workload to the threads and measures
+        // the execution time
         send_workload!(query_queue, join_handles)
     }
 
+    // The benchmark function itself. Only needs to expand the generic
+    // benchmark in the right way.
     pub fn lock_bench(c: &mut Criterion) {
         generic_bench!(
             c,
@@ -212,7 +287,9 @@ mod lock {
     }
 }
 
-// The ASSOCIATIVE strategy
+// The ASSOCIATIVE strategy.
+// This uses the LRUAssociative set of caches. Each time, the worker thread
+// only needs to lock the caches it needs for the current transaction.
 mod assoc {
     use super::{WORKLOAD, prepare_data, THREAD_COUNTS, WORKLOAD_FILENAME, CACHE_SIZE_TOTAL};
     use std::time::{Duration, Instant};
@@ -251,6 +328,7 @@ mod assoc {
         };
     }
 
+    // One iteration of the measurement.
     fn perform_measurement_iteration(thread_count: usize) -> Duration {
         // First, prepare the queue to send the workload through
         let workload_size = unsafe { (*WORKLOAD).len() };
@@ -265,9 +343,13 @@ mod assoc {
             join_handles.push(join_handle);
         }
 
+        // Expand the macro that sends the workload to the threads and measures
+        // the execution time
         send_workload!(query_queue, join_handles)
     }
 
+    // The benchmark function itself. Only needs to expand the generic
+    // benchmark in the right way.
     pub fn assoc_bench(c: &mut Criterion) {
         generic_bench!(
             c,
@@ -281,6 +363,15 @@ mod assoc {
 }
 
 // The PER-THREAD strategy
+// This uses small caches per each thread. There is one modification lock
+// worker threads need to lock to modify any records globally. When they do,
+// they need to inform all the other threads, that are responsible for
+// invalidating the affected records in their caches and always hold a valid
+// set of records.
+// 
+// The invalidation requests are sent to worker threads via a dedicated
+// invalidation thread, which always receives invalidation requests from a
+// worker thread, and broadcasts the request to all the other worker threads.
 mod per_thread {
     use super::{WORKLOAD, prepare_data, THREAD_COUNTS, WORKLOAD_FILENAME, CACHE_SIZE_TOTAL, Transaction, SearchTxn, ModifyTxn};
     use std::time::{Duration, Instant};
@@ -421,6 +512,7 @@ mod per_thread {
         };
     }
 
+    // One iteration of the measurement.
     fn perform_measurement_iteration(thread_count: usize) -> Duration {
         // First, prepare the queue to send the workload through
         let workload_size = unsafe { (*WORKLOAD).len() };
@@ -449,6 +541,8 @@ mod per_thread {
         let invalidation_thread_handle = std::thread::spawn(move || {
             per_thread_invalidation_thread!(inval_recv, thread_sends);
         });
+        // Expand the macro that sends the workload to the threads and measures
+        // the execution time
         let duration = send_workload!(query_queue, join_handles);
         // Now also join the dedicated broadcast thread.
         invalidation_thread_handle.join().unwrap();
@@ -456,6 +550,7 @@ mod per_thread {
         duration
     }
 
+    // The benchmark function itself.
     pub fn per_thread_bench(c: &mut Criterion) {
         // Initiate the modification lock that will be used in all the
         // per-thread measurements
@@ -463,6 +558,7 @@ mod per_thread {
             MODIFICATION_LOCK = Box::into_raw(Box::new(Mutex::new(())));
         }
 
+        // Expand the generic benchmark in the right way.
         generic_bench!(
             c,
             "PER-THREAD",
@@ -479,7 +575,14 @@ mod per_thread {
     }
 }
 
-// The TRANSACTIONAL strategy
+// The TRANSACTIONAL strategy.
+// This uses the `LRUTransactional` concurrently readable, "transactional" data
+// structure. Worker threads that only need to use the cache for searches
+// obtain a read-only snapshot of the cache using the `read` function, they
+// keep record of keys they hit to also hit them globally once they have write
+// privilege.
+// Modifying threads obtain write privilege to the cache (which only one thread
+// can have at a time), which allows them to work with the cache in any way.
 mod txnal {
     use super::{WORKLOAD, prepare_data, THREAD_COUNTS, WORKLOAD_FILENAME, CACHE_SIZE_TOTAL, Transaction};
     use std::time::{Duration, Instant};
@@ -589,6 +692,7 @@ mod txnal {
         };
     }
 
+    // One iteration of the measurement.
     fn perform_measurement_iteration(thread_count: usize) -> Duration {
         // First, prepare the queue to send the workload through
         let workload_size = unsafe { (*WORKLOAD).len() };
@@ -603,9 +707,13 @@ mod txnal {
             join_handles.push(join_handle);
         }
 
+        // Expand the macro that sends the workload to the threads and measures
+        // the execution time
         send_workload!(query_queue, join_handles)
     }
 
+    // The benchmark function itself. Only needs to expand the generic
+    // benchmark in the right way.
     pub fn txnal_bench(c: &mut Criterion) {
         generic_bench!(
             c,
