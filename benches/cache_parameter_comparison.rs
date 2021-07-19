@@ -173,7 +173,7 @@ macro_rules! perform_qqs {
         let qq_lfu_writepath = format!("benches/results/2q_lfu_params-{}-capacity-{}.result", ACCESS_FILENAMES[$log_idx], $capacity_total);
 
         // 2Q
-        let mut qq_writefile = File::create(qq_writepath).unwrap();
+        let mut qq_writefile = File::create(qq_writepath.clone()).unwrap();
         // Plot type
         writeln!(&mut qq_writefile, "3D").unwrap();
         // Plot title
@@ -184,7 +184,7 @@ macro_rules! perform_qqs {
         writeln!(&mut qq_writefile, "{}", unsafe { (*ACCESSES).len() - UNIQUE_KEY_COUNT }).unwrap();
 
         // 2Q LFU
-        let mut qq_lfu_writefile = File::create(qq_lfu_writepath).unwrap();
+        let mut qq_lfu_writefile = File::create(qq_lfu_writepath.clone()).unwrap();
         // Plot type
         writeln!(&mut qq_lfu_writefile, "3D").unwrap();
         // Plot title
@@ -225,6 +225,8 @@ macro_rules! perform_qqs {
             Box::from_raw(QQ_RESULT_FILE as *mut File);
             Box::from_raw(QQ_LFU_RESULT_FILE as *mut File);
         }
+        println!("{} written.", qq_writepath);
+        println!("{} written.", qq_lfu_writepath);
     };
 }
 
@@ -234,7 +236,7 @@ macro_rules! perform_qqs {
 fn perform_lirs<const N: usize>(log_idx: usize, capacity_total: usize, hir_capacities: [usize; N]) {
     // INITIATE THE RESULT FILE (of the "2D single" type):
     let lirs_writepath = format!("benches/results/lirs_params-{}-capacity-{}.result", ACCESS_FILENAMES[log_idx], capacity_total);
-    let mut lirs_writefile = File::create(lirs_writepath).unwrap();
+    let mut lirs_writefile = File::create(lirs_writepath.clone()).unwrap();
     // Plot type
     writeln!(&mut lirs_writefile, "2D single").unwrap();
     // Plot title
@@ -260,12 +262,15 @@ fn perform_lirs<const N: usize>(log_idx: usize, capacity_total: usize, hir_capac
         write!(&mut lirs_writefile, " {}", count_cache!(&mut cache)).unwrap();
     }
     writeln!(&mut lirs_writefile, "").unwrap();
+    println!("{} written.", lirs_writepath);
 }
 
 /// The main function iterates through our (two) access logs and uses
 /// appropriate macros to measure the effect of the parameters on the miss
 /// counts, and write them into the right `.result` files.
 fn main() {
+    println!("STARTING THE 'CACHE PARAMETER COMPARISON' MEASUREMENT.");
+    println!("Results will be written to the benches/results directory.");
     for idx in 0..MEASUREMENT_COUNT {
         // Informative print to stdout
         println!("Processing file {}...", ACCESS_FILENAMES[idx]);
@@ -287,6 +292,7 @@ fn main() {
         unsafe {
             Box::from_raw(ACCESSES as *mut Vec<u16>);
         }
+        println!("");
     }
 }
 

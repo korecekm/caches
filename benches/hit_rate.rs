@@ -170,7 +170,7 @@ macro_rules! perform_measurement {
         let readpath = format!("benches/access_logs/{}.in", $filename);
         let writepath = format!("benches/results/hit_rate-{}.result", $filename);
         prepare_data(&readpath);
-        let mut writefile = File::create(writepath).unwrap();
+        let mut writefile = File::create(writepath.clone()).unwrap();
 
         // Write the first several, generic, lines of the result file
         writeln!(&mut writefile, "2D multi").unwrap();
@@ -220,10 +220,15 @@ macro_rules! perform_measurement {
             Box::from_raw(ACCESSES as *mut Vec<u16>);
             Box::from_raw(OPT_METADATA as *mut Vec<Vec<u16>>);
         }
+        println!("{} written.", writepath);
+        println!("");
     };
 }
 
 fn main() {
+    println!("STARTING THE 'HIT RATE' MEASUREMENT");
+    println!("Results will be written to the benches/results directory.");
+
     // Perform the measurement for "Log 1" with the selected cache capacities
     perform_measurement!("output", 1, 80, 150, 250, 400, 600, 800, 1006);
     // Perform the measurement for "Log 2" with the selected cache capacities
