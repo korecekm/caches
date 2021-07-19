@@ -18,6 +18,10 @@
 // a way to think of it) always try to keep the number of records inside T1 as `p`, which is a
 // parameter inside our cache which adaptively changes based on current access patterns (it gets
 // increased on accesses to B1 and decreased on accesses to B2).
+// 
+// As with any cache data structure, we also keep a hash map (called `map`) that stores pointers to
+// the list's nodes for the records' keys, to implement operations in a convenient and
+// constant-time way.
 
 use crate::list::{DLList, DLNode};
 use std::cmp::{max, min};
@@ -25,6 +29,9 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::ptr::NonNull;
 
+// This is what is stored in the `map`, each type of record holds a pointer to
+// its node in one of the queues. Only records in the 'resident' parts of the
+// cache (T1 and T2) also hold boxed values.
 enum Record<K, V> {
     T1(NonNull<DLNode<K>>, Box<V>),
     B1(NonNull<DLNode<K>>),
@@ -32,18 +39,50 @@ enum Record<K, V> {
     B2(NonNull<DLNode<K>>),
 }
 
+/// # ARC Cache
+/// A cache data structure using the ARC eviction logic. It serves as a
+/// key-value storage for a limited amount of records.
+/// 
+/// We create an ARCache struct by providing the `new` function with a capacity
+/// ```
+/// let mut cache = ARCache::new(10);
+/// ```
+/// `cache` can now be used to store key-value pairs, we insert records with
+/// the `insert` method:
+/// ```
+/// // Only keys that aren't present in the cache yet can be inserted
+/// cache.insert(key1, value1);
+/// cache.insert(key2, value2);
+/// ```
+/// The data structure never exceeds the given capacity of records, once the
+/// capacity is reached and another records are being inserted, it evicts
+/// records.
+/// 
+/// Values for keys can be retrieved with the `get` function. The returned
+/// value is an `Option`, it may be `None` if the record hasn't been inserted
+/// at all, or was evicted by the replacement logic
+/// ```
+/// assert!(cache.get(&key1), Some(&value1));
+/// ```
+/// Both `insert` and `get` update the cache's internal state according to the
+/// ARC logic.
 pub struct ARCache<K: Clone + Eq + Hash, V> {
+    // The total cache capacity
     capacity: usize,
+    // `map` for convenient accesses to nodes
     map: HashMap<K, Record<K, V>>,
+    // The four queues of the structure.
     t1: DLList<K>,
     b1: DLList<K>,
     t2: DLList<K>,
     b2: DLList<K>,
+    // The "p" parameter from the original paper. divides the total capacity
+    // between T1 and T2.
     p: usize,
 }
 
 impl<K: Clone + Eq + Hash, V> ARCache<K, V> {
-    /// Create a new ARC cache data structure instance.
+    /// Create a new cache of given capacity, with the ARC replacement policy.
     ///
     /// Note that when full, this data structure keeps, besides the `capacity`
     /// of key-value records also another `capacity` of records with just the
@@ -309,6 +348,8 @@ mod test {
         check_queue_elements(&arc, vec![6, 5], vec![4], vec![3], vec![0, 1]);
     }
 
+    /// Checks that the records in the given ARCache are stored in the queues
+    /// ordered exactly as we expect.
     fn check_queue_elements<K>(
         cache: &ARCache<K, K>,
         expect_t1: Vec<K>,
@@ -324,6 +365,8 @@ mod test {
         check_list_content(&cache.b2, &expect_b2);
     }
 
+    /// Given a DLList and a Vec, this checks that both contain exactly the
+    /// same records, in the same order.
     fn check_list_content<K>(list: &DLList<K>, expect: &Vec<K>)
     where
         K: Eq + Clone + Hash + Debug,

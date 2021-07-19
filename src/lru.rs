@@ -2,21 +2,51 @@
 // replacement policy. As the name suggests, when the cache is full and a new record is being
 // inserted into it, the strategy evicts the record that has been accessed the least recently.
 //
-// We implement this with a queue - a doubly linked list. New records are pushed to the list's
-// front, on reaccess, an element moves back to the front. Records are evicted from the back.
+// We implement this with a queue (a doubly linked list). New records are pushed to the list's
+// front. On reaccess, an element moves back to the front. Records are evicted from the back.
 //
 // As with any cache data structure, we also keep a hash map (called `map`) that stores pointers to
 // the list's nodes for the records' keys, to implement operations in a convenient and
-// constant-time way
+// constant-time way.
 
 use crate::list::{DLList, DLNode};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::ptr::NonNull;
 
+/// # LRU Cache
+/// A cache data structure using the LRU eviction logic. It serves as a key-value storage for a limited amount of records.
+/// 
+/// We create an LRUCache struct by providing the `new` function with a
+/// capacity.
+/// ```
+/// let mut cache = LRUCache::new(10);
+/// ```
+/// `cache` can now be used to store key-value pairs, we insert records with
+/// the `insert` method:
+/// ```
+/// // Only keys that aren't present in the cache yet can be inserted
+/// cache.insert(key1, value1);
+/// cache.insert(key2, value2);
+/// ```
+/// The data structure never exceeds the given capacity of records, once the
+/// capacity is reached and another records are being inserted, it evicts
+/// records.
+/// 
+/// Values for keys can be retrieved with the `get` function. The returned
+/// value is an `Option`, it may be `None` if the record hasn't been inserted
+/// at all, or was evicted by the replacement logic
+/// ```
+/// assert!(cache.get(&key1), Some(&value1));
+/// ```
+/// Both `insert` and `get` update the cache's internal state according to the
+/// LRU logic.
 pub struct LRUCache<K: Clone + Eq + Hash, V> {
+    // The set capacity of the cache
     capacity: usize,
+    // Hash map storing pointers to nodes in the queue, for convenience.
     map: HashMap<K, NonNull<DLNode<(K, V)>>>,
+    // The queue (doubly linked list) itself
     list: DLList<(K, V)>,
 }
 
@@ -104,15 +134,19 @@ mod test {
         assert_eq!(lru.get(&2), Some(&'B'));
         assert_eq!(lru.get(&1), Some(&'A'));
         assert_eq!(lru.get(&3), None);
+        // Capacity now gets filled
         lru.insert(3, 'C');
         assert_eq!(lru.get(&4), None);
+        // First record over capacity, key 2 should get evicted.
         lru.insert(4, 'D');
 
         assert_eq!(lru.get(&2), None);
         assert_eq!(lru.list.size, 3);
+        // Check the exact ordering in our queue
         for i in [(1, 'A'), (3, 'C'), (4, 'D')].iter() {
             assert_eq!(lru.list.pop_back(), Some(*i));
         }
+        // No more elements in the queue
         assert_eq!(lru.list.size, 0);
         assert_eq!(lru.list.pop_back(), None);
     }
@@ -123,17 +157,21 @@ mod test {
         // transitively `evict` too)
         let mut lru = LRUCache::new(5);
         assert_eq!(lru.extract(&7), None);
+        // Insert several elements, half over capacity
         for i in 1..11 {
             lru.insert(i, 2 * i);
         }
+        // Check this key was evicted by the replacement policy
         assert_eq!(lru.extract(&5), None);
 
+        // Extract two cached elements
         assert_eq!(lru.list.size, 5);
         assert_eq!(lru.extract(&7), Some(14));
         assert_eq!(lru.list.size, 4);
         assert_eq!(lru.extract(&9), Some(18));
         assert_eq!(lru.list.size, 3);
 
+        // Check the exact ordering in our queue
         for elem in [(6, 12), (8, 16), (10, 20)].iter() {
             assert_eq!(lru.list.pop_back(), Some(*elem));
         }
@@ -143,8 +181,8 @@ mod test {
 
     #[test]
     fn smoke_test() {
-        // Doesn't test the cache semantics, only makes sure the cache always
-        // stays at the limit number of elements
+        // Doesn't test the cache semantics. Uses randomized operation to
+        // make sure the cache always stays at the limit number of elements.
         let mut rng = thread_rng();
         let mut cache = LRUCache::new(25);
         // First, fill the cache

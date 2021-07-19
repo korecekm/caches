@@ -51,6 +51,7 @@ enum Record<K, V> {
 }
 
 impl<K, V> Record<K, V> {
+    /// Is this record a LIR?
     fn is_lir(&self) -> bool {
         if let Self::Lir(_, _) = self {
             true
@@ -60,6 +61,35 @@ impl<K, V> Record<K, V> {
     }
 }
 
+/// # LIRS Cache
+/// A cache data structure using the LIRS eviction logic. It serves as a key
+/// value storage for a limited amount of records.
+/// 
+/// This replacement policy is parameterized, its full capacity is divided
+/// between a LIR-capacity and a HIR-capacity, which we need to select when
+/// creating the cache struct.
+/// ```
+/// let mut cache = LIRSCache::new(50, 4);
+/// ```
+/// `cache` can now be used to store key-value pairs, we insert records with
+/// the `insert` method:
+/// ```
+/// // Only keys that aren't present in the cache yet can be inserted
+/// cache.insert(key1, value1);
+/// cache.insert(key2, value2);
+/// ```
+/// The data structure never exceeds the given capacity of records, once the
+/// capacity is reached and another records are being inserted, it evicts
+/// records.
+/// 
+/// Values for keys can be retrieved with the `get` function. The returned
+/// value is an `Option`, it may be `None` if the record hasn't been inserted
+/// at all, or was evicted by the replacement logic
+/// ```
+/// assert!(cache.get(&key1), Some(&value1));
+/// ```
+/// Both `insert` and `get` update the cache's internal state according to the
+/// LIRS logic.
 pub struct LIRSCache<K: Clone + Eq + Hash, V> {
     // The maximum number of low inter-reference elements cached together
     lir_capacity: usize,
@@ -146,8 +176,7 @@ impl<K: Clone + Eq + Hash, V> LIRSCache<K, V> {
         self.insert_hir(key, value);
     }
 
-    /// If cached, this returns the value for given key.
-    /// Potentially changes the cache's inner structure.
+    /// Returns a reference to the value cached with this key, if cached.
     pub fn get<'a>(&'a mut self, key: &K) -> Option<&'a V> {
         if let Some(ref record) = self.map.get(key) {
             match record {
@@ -342,11 +371,14 @@ mod test {
 
     #[test]
     fn simple() {
+        // A basic test of the cache's semantics
         let mut lirs = LIRS::new(3, 2);
         assert_eq!(lirs.get(&1), None);
         lirs.insert(1, 2);
         assert_eq!(lirs.get(&1), Some(&2));
 
+        // Each time, we perform intentional insertions and gets, and check the
+        // state of the cache is as we expect.
         lirs.insert(2, 4);
         lirs.insert(3, 6);
         assert_eq!(lirs.get(&2), Some(&4));
@@ -370,6 +402,7 @@ mod test {
         check_queue_elements(&lirs, 3, vec![8, 1, 6], vec![5, 4]);
     }
 
+    /// Check the exact state of the cache and its utility queues.
     fn check_queue_elements<K>(
         cache: &LIRS<K, K>,
         lir_count: usize,
@@ -428,6 +461,8 @@ mod test {
         }
     }
 
+    /// Check that the access queue's back element is a LIR record (which is a
+    /// LIRS invariant).
     fn check_access_back_lir(cache: &LIRS<u32, u32>) {
         if let Some(ref access_key) = cache.access_queue.get_back() {
             assert!(cache.map.get(access_key).unwrap().is_lir());

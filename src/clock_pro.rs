@@ -71,6 +71,35 @@ struct Node<K, V> {
     flags: u8,
 }
 
+
+/// # CLOCK-Pro Cache
+/// A cache data structure using the CLOCK-Pro eviction logic. It serves as a
+/// key-value storage for a limited amount of records.
+/// 
+/// We create a CLOCKProCache struct by providing the `new` function with a
+/// capacity.
+/// ```
+/// let mut cache = CLOCKProCache::new(10);
+/// ```
+/// `cache` can now be used to store key-value pairs, we insert records with
+/// the `insert` method:
+/// ```
+/// // Only keys that aren't present in the cache yet can be inserted
+/// cache.insert(key1, value1);
+/// cache.insert(key2, value2);
+/// ```
+/// The data structure never exceeds the given capacity of records, once the
+/// capacity is reached and another records are being inserted, it evicts
+/// records.
+/// 
+/// Values for keys can be retrieved with the `get` function. The returned
+/// value is an `Option`, it may be `None` if the record hasn't been inserted
+/// at all, or was evicted by the replacement logic
+/// ```
+/// assert!(cache.get(&key1), Some(&value1));
+/// ```
+/// Both `insert` and `get` update the cache's internal state according to the
+/// CLOCK-Pro logic.
 pub struct CLOCKProCache<K: Clone + Eq + Hash, V> {
     capacity: usize,
     // The 'desired' state is having `cold_capacity` resident cold records and
@@ -557,7 +586,8 @@ mod test {
     #[test]
     fn simple() {
         // A simple test of the cache's semantics.
-        // We just perform get and insert operations and
+        // We just perform get and insert operations and always check that the
+        // cache has the exact structure we expect.
         let mut cache = CLOCKProCache::new(6);
         for i in 0..6 {
             cache.insert(i, 2 * i);

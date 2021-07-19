@@ -1,28 +1,99 @@
+// An implementation of our experimental 2Q-LFU cache.
+// 
+// This has Q1 and Q2 queues that function just like in the 2Q policy (see `qq.rs`), only that the
+// main "queue" is now the LFU heap (which in turn functions just like the LFU in `lfu.rs`).
+// 
+// Records are inserted into Q1, if Q1 is full, its records overflow into Q2. Records overflowing
+// the Q2 are evicted. Reaccesses to records in the Q1 do nothing. Records reaccessed in the Q2
+// move to the LFU heap - which initiates their frequency counting. Reaccesses inside the LFU are
+// just as the standard LFU. Records overflowing the LFU are evicted.
+// 
+// We store key-value pairs in `Record` structs that also hold information about their location, so
+// that we can tell which queue (or heap) they are in.
+//
+// As with any cache data structure, we also keep a hash map (called `map`) that stores pointers to
+// the nodes of our queues for the records' keys, to implement operations in a convenient and
+// constant-time way.
+
 use crate::list::{DLList, DLNode};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::mem::{self, MaybeUninit};
 use std::ptr::NonNull;
 
+/// Record inside our `map`. Unlike the standard 2Q, the record type is
+/// hardwired to the `Record`.
 enum Record<K, V> {
+    // Q1 and Q2 records are stored with pinters to their nodes
     Q1Elem(NonNull<DLNode<(K, Box<V>)>>),
     Q2Elem(NonNull<DLNode<(K, Box<V>)>>),
+    // An LFU record stores the index of its entry in the LFU itself, and its
+    // boxed value
     LFUElem(usize, Box<V>),
 }
 
-/// 2Q cache where the primary (last) 'queue' is an LFU rather than LRU
+/// # Experimental 2Q-LFU Cache
+/// A cache data structure using our experimental 2Q-LFU eviction logic. It
+/// serves as a key-value storage for a limited amount of records.
+/// 
+/// This replacement policy is parameterized, meaning that its full capacity is
+/// divided between three: capacities of the Q1, Q2 and M (main, "LFU") queues
+/// (the LFU actually being a priority queue). The LFU capacity is set using
+/// const generics.
+/// 
+/// Example of how it can be created:
+/// ```
+/// let q1_capacity = 3;
+/// let q2_capacity = 3;
+/// let m_capacity = 10;
+/// let mut cache = QQLFUCache::<key_type, value_type, m_capacity>::new(q1_capacity, q2_capacity);
+/// ```
+/// `cache` can now be used to store key-value pairs, we insert records with
+/// the `insert` method:
+/// ```
+/// // Only keys that aren't present in the cache yet can be inserted
+/// cache.insert(key1, value1);
+/// cache.insert(key2, value2);
+/// ```
+/// The data structure never exceeds the given capacity of records (which is
+/// the sum of the Q1, Q2 and M capacities) by evicting records using the
+/// 2Q-LFU replacement policy.
+/// 
+/// Values for keys can be retrieved with the `get` function. The returned
+/// value is an `Option`, it may be `None` if the record hasn't been inserted
+/// at all, or was evicted by the replacement logic
+/// ```
+/// assert!(cache.get(&key1), Some(&value1));
+/// ```
+/// Both `insert` and `get` update the cache's internal state according to the
+/// 2Q-LFU logic.
 pub struct QQLFUCache<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> {
+    // Capacities of Q1 and Q2
     q1_capacity: usize,
     q2_capacity: usize,
+    // `map` for convenient access to nodes
     map: HashMap<K, Record<K, V>>,
+    // The two queues
     queue1: DLList<(K, Box<V>)>,
     queue2: DLList<(K, Box<V>)>,
+    // The main priority queue, the LFU
     lfu_heap: MaybeUninit<[(K, u32); LFU_CAPACITY]>,
-    // the current number of elements that are actually initiated inside the heap
+    // The current number of elements that are actually initiated inside the
+    // heap
     lfu_size: usize,
 }
 
 impl<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> QQLFUCache<K, V, LFU_CAPACITY> {
+    /// Create a new 2Q-LFu cache with the given capacities of internal queues.
+    /// The size of the main, LFU, priority queue is given using const generics
+    /// and is therefore hardwired to the struct's type.
+    /// 
+    /// If you are unsure of what parameters to choose, our measurements
+    /// suggest using this approach:
+    /// * Choose the total capacity for the cache (it must be high enough for
+    ///   the next points)
+    /// * Both Q1 and Q2 capacities should be set to a fifth of the total
+    /// * (the main priority queue, "LFU" gets the rest)
     pub fn new(q1_capacity: usize, q2_capacity: usize) -> Self {
         Self {
             q1_capacity,
@@ -35,16 +106,19 @@ impl<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> QQLFUCache<K, V, LFU_CA
         }
     }
 
+    /// Returns a reference to the value cached with this key, if cached.
     pub fn get<'a>(&'a mut self, key: &K) -> Option<&'a V> {
         match self.map.get(key) {
             Some(Record::Q1Elem(node_ptr)) => Some(
                 // calling this function is a necessary workaround
                 Self::get_value_from_q1_node(node_ptr.clone()),
             ),
+            // An element reaccessed inside Q2 moves into the LFu
             Some(Record::Q2Elem(node_ptr)) => {
                 let node_ptr = node_ptr.clone();
                 Some(self.move_to_lfu(node_ptr))
             }
+            // Standard LFU behavior of the main priority queue
             Some(Record::LFUElem(idx, _)) => {
                 let idx = idx.clone();
                 Some(self.access_in_lfu(key, idx))
@@ -53,8 +127,11 @@ impl<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> QQLFUCache<K, V, LFU_CA
         }
     }
 
+    /// Submit this key-value pair for caching.
+    /// The key must not yet be present in the cache!
     pub fn insert(&mut self, key: K, value: V) {
         if self.queue1.size == self.q1_capacity {
+            // If Q1's capacity is reached overflow the back element to Q2
             if let Some((evict_key, evict_value)) = self.queue1.pop_back() {
                 let last_key = evict_key.clone();
                 let record_ptr = NonNull::new(Box::into_raw(Box::new(DLNode::new((
@@ -63,14 +140,17 @@ impl<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> QQLFUCache<K, V, LFU_CA
                 )))))
                 .unwrap();
                 self.insert_into_q2(record_ptr);
+                // The map's record must be updated with the new location
                 self.map.insert(last_key, Record::Q2Elem(record_ptr));
             }
         }
+        // Generate the new record's node
         let mut new_record = NonNull::new(Box::into_raw(Box::new(DLNode::new((
             key.clone(),
             Box::new(value),
         )))))
         .unwrap();
+        // Insert it to the map and to Q1
         self.map.insert(key, Record::Q1Elem(new_record));
         unsafe {
             self.queue1
@@ -79,12 +159,15 @@ impl<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> QQLFUCache<K, V, LFU_CA
         self.queue1.size += 1;
     }
 
+    /// Inserts given node to Q2.
     fn insert_into_q2(&mut self, mut node: NonNull<DLNode<(K, Box<V>)>>) {
         if self.queue2.size == self.q2_capacity {
+            // If capacity reached, the back element is evicted
             if let Some((record_key, _)) = self.queue2.pop_back() {
                 self.map.remove(&record_key);
             }
         }
+        // Perform the insertion itself
         unsafe {
             self.queue2.insert_head(node.as_mut() as *mut DLNode<_>);
         }
@@ -185,6 +268,7 @@ impl<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> QQLFUCache<K, V, LFU_CA
         let heap_ref = unsafe { &*self.lfu_heap.as_ptr() };
         let child_idx1 = 2 * (*heap_idx) + 1;
         let child_idx2 = 2 * (*heap_idx) + 2;
+        // See which child has the freq counter set lower
         let swap_idx = if self.lfu_size == 2 * (*heap_idx) + 2 {
             child_idx1
         } else if heap_ref[child_idx2].1 < heap_ref[child_idx1].1 {
@@ -193,6 +277,7 @@ impl<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> QQLFUCache<K, V, LFU_CA
             child_idx1
         };
 
+        // If the child actually has lower frequency, swap
         if heap_ref[swap_idx].1 <= heap_ref[*heap_idx].1 {
             self.swap_in_heap(*heap_idx, swap_idx);
             *heap_idx = swap_idx;
@@ -233,6 +318,9 @@ impl<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> QQLFUCache<K, V, LFU_CA
         mut_heap[swap_idx] = mem::replace(&mut mut_heap[request_idx], swapped_elem);
     }
 
+    // Checks that the ordering inside the heap is correct (irt the heap
+    // semantics) and that also that there is exactly the expected number of
+    // elements.
     #[cfg(test)]
     fn check_heap_properties(&self, expected_elem_count: usize) {
         assert_eq!(self.lfu_size, expected_elem_count);
@@ -243,6 +331,7 @@ impl<K: Clone + Eq + Hash, V, const LFU_CAPACITY: usize> QQLFUCache<K, V, LFU_CA
         }
     }
 
+    // Utility function for `check_heap_properties`
     #[cfg(test)]
     fn heap_check_recurse(&self, heap_idx: usize, freq_bound: &u32) {
         if heap_idx >= self.lfu_size {
@@ -262,6 +351,7 @@ mod test {
 
     #[test]
     fn simple() {
+        // A simple test of the cache's semantics:
         let mut cache = QQLFUCache::<_, _, 3>::new(2, 2);
         assert_eq!(cache.get(&1), None);
         for i in 1..5 {

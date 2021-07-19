@@ -14,6 +14,34 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::mem::MaybeUninit;
 
+/// # CLOCK Cache
+/// A cache data structure using the CLOCK eviction logic. It serves as a
+/// key-value storage for a limited amount of records.
+/// 
+/// The capacity is set with const generics, so it is hardwired to the type. We
+/// create a CLOCKCache struct with the `new` function.
+/// ```
+/// let mut cache = CLOCKCache::<key_type, value_type, CAPACITY>::new();
+/// ```
+/// `cache` can now be used to store key-value pairs, we insert records with
+/// the `insert` method:
+/// ```
+/// // Only keys that aren't present in the cache yet can be inserted
+/// cache.insert(key1, value1);
+/// cache.insert(key2, value2);
+/// ```
+/// The data structure never exceeds the given capacity of records, once the
+/// capacity is reached and another records are being inserted, it evicts
+/// records.
+/// 
+/// Values for keys can be retrieved with the `get` function. The returned
+/// value is an `Option`, it may be `None` if the record hasn't been inserted
+/// at all, or was evicted by the replacement logic
+/// ```
+/// assert!(cache.get(&key1), Some(&value1));
+/// ```
+/// Both `insert` and `get` update the cache's internal state according to the
+/// CLOCK logic.
 pub struct CLOCKCache<K: Clone + Eq + Hash, V, const CAPACITY: usize> {
     // Our map stores indices inside `clock` and boxed values for stored keys.
     map: HashMap<K, (usize, Box<V>)>,
@@ -92,6 +120,7 @@ mod test {
 
     #[test]
     fn simple() {
+        // A basic test of the cache's semantics
         let mut cache = Clock::<_, _, 4>::new();
         cache.insert(0, 0);
         cache.insert(1, 2);
