@@ -1,29 +1,27 @@
+// # A concurrently readable, transactional B+ tree
+// The underlying sequential data structure is the standard B+ tree. The "transactional" properties
+// described in KVMap's docs are guaranteed with the method explained in section 3.1 of
+// https://dl.acm.org/doi/10.1145/2501620.2501623.
+// The root is protected with a Mutex that needs to be locked for a transaction's creation. Memory
+// reclamation is guaranteed with the STD Arc. All nodes need to keep a transaction ID (txid) that
+// increases with each write transaction. This number lets us know which nodes were created with an
+// earlier write transaction (and can therefore not be modified with this one) and which were
+// already created by this one.
+// 
+// DISCLAIMER: This is a transactional B+ tree made for a prototype transactional hash map.
+// Implementing a transactional B+ tree is rather complicated and this code may be a little hard to
+// orientate in. But this is not used anywhere in the thesis expect a comparison with the TrieMap
+// The reader of this source file is expected to understand both how a standard B+ tree works and
+// the method for making it transactional in the cited article.
+
 #[cfg(test)]
 use std::fmt::Display;
 use std::mem::{self, MaybeUninit};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-// A concurrently readable, transactional B+ tree
-
-// # HOW REMOVE WORKS:
-// Aside from the key to be removed in the subtree, a node receives refs to its
-// left and right neighbor (one of them may be None, but not both);
-// If underflow happens, we first try to rotate from the right neighbor, then
-// from the left; if neither are possible, neighbors reached lower limit and
-// we merge with one of them, first trying merging with the right one, then the
-// left; In either case, the node that's called is kept and the merged one
-// (right or left) becomes unused
-enum BPTRemoveResponse<K> {
-    NoChange,                    // underflow didn't occur
-    RotateLeft(MaybeUninit<K>),  // the key to the left should be changed for given value
-    RotateRight(MaybeUninit<K>), // the key on idx corresponding to changed node should change
-    MergeLeft,                   // node was merged with the one to the left
-    MergeRight,                  // node was merged with the one to the right
-}
-
 // The maximum number of child nodes
 // ! This can currently not be changed as is, because certain functions in Node
-// statically count on this parameter being 8
+// statically count on this parameter being 8 !
 const B_PARAMETER: usize = 8;
 
 // simulates mem::take for MaybeUninit, ::uninit() acting as the default value
@@ -33,8 +31,10 @@ macro_rules! take_mu {
     };
 }
 
+// The 'pointer' to child nodes is simulated by an Arc reference Option
 type Child<T> = Option<Arc<T>>;
 
+// Branch node of the B+ tree
 #[derive(Clone)]
 struct Branch<K, V>
 where
@@ -43,9 +43,12 @@ where
 {
     txid: u32,
     key_count: u8,
+    // Keys and references to child nodes are stored in separate arrays
     keys: [MaybeUninit<K>; B_PARAMETER - 1],
     refs: [Child<Node<K, V>>; B_PARAMETER],
 }
+
+// Leaf node of the B+ tree
 #[derive(Clone)]
 struct Leaf<K, V>
 where
@@ -54,10 +57,12 @@ where
 {
     txid: u32,
     key_count: u8,
+    // Keys and references to child values are stored in separate arrays
     keys: [MaybeUninit<K>; B_PARAMETER],
     refs: [Child<V>; B_PARAMETER],
 }
 
+// A general node of the B+ tree
 #[derive(Clone)]
 enum Node<K, V>
 where
@@ -130,26 +135,38 @@ where
     K: Ord + Copy,
     V: Clone,
 {
+    // Root node
     root: Mutex<Child<Node<K, V>>>,
+    // Mutex providing the uniqueness of write transactions
     write: Mutex<()>,
 }
 
+/// Read snapshot for the `KVMap` transactional hash map
 pub struct KVMReadTxn<K, V>
 where
     K: Ord + Copy,
     V: Clone,
 {
+    // Reference to the root node
     root: Child<Node<K, V>>,
 }
 
+/// Write handle for the `KVMap` transactional hash map. Up to one instance of
+/// a tree's write "transaction" may exist at a time. Changes made with the
+/// handle only propagate globally after calling the `commit` method
 pub struct KVMWriteTxn<'a, K, V>
 where
     K: Ord + Copy,
     V: Clone,
 {
+    // This write transaction's txn ID
     txid: u32,
+    // Reference to the global B+ tree handle
     caller: &'a KVMap<K, V>,
+    // Reference to the root node (either the original, or this write
+    // transaction's modified clone)
     root: Child<Node<K, V>>,
+    // MutexGuard protecting the uniqueness of this write transaction
     _guard: MutexGuard<'a, ()>,
 }
 
@@ -210,8 +227,13 @@ where
         }
     }
 
+    /// Once the `write` Mutex of the tree has been successfully locked, this
+    /// prepares the write transaction handle. The MutexGuard for `write` is
+    /// given in `guard`
     fn prepare_write_txn<'a>(&'a self, guard: MutexGuard<'a, ()>) -> KVMWriteTxn<'a, K, V> {
         let root = &*self.root.lock().unwrap();
+        // Determine new transaction's id based on the old one in the map's
+        // root.
         let txid = match root {
             None => 0,
             Some(arc) => match &**arc {
@@ -219,6 +241,7 @@ where
                 Node::Branch(ref branch) => branch.txid + 1,
             },
         };
+        // Return the write handle itself
         KVMWriteTxn {
             txid,
             caller: self,
@@ -236,6 +259,7 @@ where
     K: Ord + Copy,
     V: Clone,
 {
+    /// Retrieves the value for given key, if present.
     pub fn search(&self, key: &K) -> Option<&V> {
         match &self.root {
             None => None,
@@ -243,12 +267,15 @@ where
         }
     }
 
+    /// Checks that all nodes obey the proper ordering of keys, and that the
+    /// total number of stored records is as the given expected count.
     #[cfg(test)]
     fn check_bptree_properties(&self, expect_record_count: usize)
     where
         K: Display,
     {
         if let Some(ref arc_root) = self.root {
+            // Check the properties in the root's subtree (the whole tree)
             let (_, count) = Node::check_bptree_properties(arc_root, None, None, true);
             assert_eq!(
                 expect_record_count, count,
@@ -259,11 +286,28 @@ where
     }
 }
 
+// # HOW REMOVE WORKS:
+// Aside from the key to be removed in the subtree, a node receives refs to its
+// left and right neighbor (one of them may be None, but not both);
+// If underflow happens, we first try to rotate from the right neighbor, then
+// from the left; if neither are possible, neighbors reached lower limit and
+// we merge with one of them, first trying merging with the right one, then the
+// left; In either case, the node that's called is kept and the merged one
+// (right or left) becomes unused
+enum BPTRemoveResponse<K> {
+    NoChange,                    // underflow didn't occur
+    RotateLeft(MaybeUninit<K>),  // the key to the left should be changed for given value
+    RotateRight(MaybeUninit<K>), // the key on idx corresponding to changed node should change
+    MergeLeft,                   // node was merged with the one to the left
+    MergeRight,                  // node was merged with the one to the right
+}
+
 impl<'a, K, V> KVMWriteTxn<'a, K, V>
 where
     K: Ord + Copy,
     V: Clone,
 {
+    /// Retrieves the value for given key, if present.
     pub fn search(&self, key: &K) -> Option<&V> {
         match &self.root {
             None => None,
@@ -271,12 +315,18 @@ where
         }
     }
 
+    /// Update this key-value pair (i.e. insert it if key not present, or
+    /// update the value for the key if it is).
     pub fn update(&mut self, key: K, val: V) {
         self.root = match mem::take(&mut self.root) {
+            // Root is none. We create a new root with given key-value pair
             None => Node::init_root(self.txid, key, val),
             Some(arc) => {
                 let mut arc = Node::modify_node(arc, self.txid);
+                // Call update for the (sub)tree
                 let response = Node::update(Arc::get_mut(&mut arc).unwrap(), key, val);
+                // If the B+ tree's depth increases, we need to create a new
+                // root node
                 if let Some((new_key, right_child)) = response {
                     Node::new_root(self.txid, new_key, arc, right_child)
                 } else {
@@ -286,13 +336,15 @@ where
         }
     }
 
+    /// Remove the record with given key, if present.
     pub fn remove(&mut self, key: &K) {
         if self.search(key).is_none() {
             return;
         }
-        // key is certainly present
+        // We ensured key is present
         self.root = if let Some(arc_root) = mem::take(&mut self.root) {
             let mut arc_root = Node::modify_node(arc_root, self.txid);
+            // Call apropriate remove function based on node type
             match &mut Arc::get_mut(&mut arc_root).unwrap() {
                 Node::Branch(ref mut branch) => {
                     if self.remove_in_root_branch(branch, key) {
@@ -403,10 +455,17 @@ where
         false
     }
 
+    /// Commit the changes done with this write transaction.
+    ///
+    /// If you wish to roll the changes back, simpy have the KVMWriteTxn handle
+    /// dropped.
     pub fn commit(self) {
+        // Exchange old root with the (potentially) modified one
         *self.caller.root.lock().unwrap() = self.root;
     }
 
+    /// Checks that all nodes obey the proper ordering of keys, and that the
+    /// total number of stored records is as the given expected count.
     #[cfg(test)]
     fn check_bptree_properties(&self, expect_record_count: usize)
     where
@@ -448,8 +507,10 @@ where
         }
     }
 
-    // TODO rewrite:
-    // (and most importantly using B_PARAMETER const)
+    /// Initiate the root node with this key-value element.
+    // Unfortunately, the way we use MaybeUninits requires the arrays to be
+    // initiate manually like this (the [elem; count] requires elem to be
+    // Clone)
     fn init_root(txid: u32, key: K, val: V) -> Child<Self> {
         Some(Arc::new(Node::Leaf(Leaf {
             txid,
@@ -477,6 +538,9 @@ where
         })))
     }
 
+    /// Creates a new root when the tree's depth increases.
+    /// Only needs the root key and the references (Arcs) to the left and right
+    /// children of the key.
     fn new_root(
         txid: u32,
         key: K,
@@ -508,19 +572,25 @@ where
         })))
     }
 
+    /// Search for an element in this subtree.
     fn search<'a>(node: &'a Arc<Self>, key: &K) -> Option<&'a V> {
+        // We proceed iteratively, moving deeper in the tree
         let mut node = node;
         'outer: loop {
             match &**node {
+                // Current node is a branch node, "recurse" deeper
                 Node::Branch(ref branch) => {
+                    // Identify the right child node to seach in
                     for i in 0..(branch.key_count as usize) {
                         if key <= unsafe { &*branch.keys[i].as_ptr() } {
                             node = branch.refs[i].as_ref().unwrap();
                             continue 'outer;
                         }
                     }
+                    // Move on to the child node
                     node = branch.refs[branch.key_count as usize].as_ref().unwrap();
                 }
+                // Leaf node, find given key
                 Node::Leaf(ref leaf) => {
                     for i in 0..(leaf.key_count as usize) {
                         if key == unsafe { &*leaf.keys[i].as_ptr() } {
@@ -543,6 +613,7 @@ where
         }
     }
 
+    /// Perform the update through a branch node
     fn update_in_branch(branch: &mut Branch<K, V>, key: K, val: V) -> Option<(K, Arc<Node<K, V>>)> {
         // find the correct child index for this key
         let mut idx = 0;
@@ -576,6 +647,7 @@ where
         }
     }
 
+    /// Split a branch into two, according to standard B+ tree rules
     fn split_branch(
         branch: &mut Branch<K, V>,
         idx: usize,
@@ -621,6 +693,7 @@ where
             all_keys[j] = take_mu!(&mut branch.keys[j]);
             all_refs[j + 1] = mem::take(&mut branch.refs[j + 1]);
         }
+        // Unify records
         all_keys[idx] = MaybeUninit::new(insert_key);
         all_refs[idx + 1] = Some(right_arc);
         for j in idx..(B_PARAMETER - 1) {
@@ -628,6 +701,7 @@ where
             all_refs[j + 2] = mem::take(&mut branch.refs[j + 1]);
         }
 
+        // Divide them right between the two nodes
         for j in 0..(B_PARAMETER / 2) {
             branch.keys[j] = take_mu!(&mut all_keys[j]);
             branch.refs[j + 1] = mem::take(&mut all_refs[j + 1]);
@@ -644,6 +718,7 @@ where
         ))
     }
 
+    /// Perform the update in a leaf node
     fn update_in_leaf(leaf: &mut Leaf<K, V>, key: K, val: V) -> Option<(K, Arc<Node<K, V>>)> {
         // find the key's position (or overflow)
         let mut idx: usize = 0;
@@ -675,6 +750,7 @@ where
         Self::split_leaf(leaf, idx, key, val)
     }
 
+    /// Split a leaf node into two, according to standard B+ tree rules
     fn split_leaf(
         leaf: &mut Leaf<K, V>,
         idx: usize,
@@ -712,6 +788,7 @@ where
             MaybeUninit::uninit(),
             MaybeUninit::uninit(),
         ];
+        // Unify records
         let mut all_refs = [None, None, None, None, None, None, None, None, None];
         for j in 0..idx {
             all_keys[j] = take_mu!(&mut leaf.keys[j]);
@@ -723,7 +800,7 @@ where
             all_keys[j + 1] = take_mu!(&mut leaf.keys[j]);
             all_refs[j + 1] = mem::take(&mut leaf.refs[j]);
         }
-        // here the actual split happens:
+        // Split the records between the two leaves:
         let new_key = unsafe { all_keys[B_PARAMETER / 2].clone().assume_init() };
         for j in 0..((B_PARAMETER / 2) + 1) {
             leaf.keys[j] = take_mu!(&mut all_keys[j]);
@@ -737,6 +814,7 @@ where
         Some((new_key, Arc::new(Node::Leaf(right_leaf))))
     }
 
+    /// Perform a remove in this subtree (see "HOW REMOVE WORKS" above)
     fn remove(
         &mut self,
         key: &K,
@@ -753,6 +831,7 @@ where
         }
     }
 
+    // (see "HOW REMOVE WORKS" above)
     fn remove_from_branch(
         branch: &mut Branch<K, V>,
         key: &K,
@@ -836,6 +915,7 @@ where
         Self::merge_branches(branch, left, right)
     }
 
+    // Attempt a B+ tree rotation from either side
     fn try_rotate_in_branch(
         branch: &mut Branch<K, V>,
         left: &mut Child<Self>,
@@ -844,7 +924,9 @@ where
         let min_keys = ((B_PARAMETER / 2) + (B_PARAMETER % 2)) as u8;
         let mut response = None;
         // See if any rotation is possible, it will be executed eventualy.
-        // first, try rotation from right neighbor
+        // first, try rotation from right neighbor.
+        // We may already generate a proper remove response, that will also
+        // give us the information about which rotation is possible, if any
         if let Some(ref neighbor) = right {
             if let Node::Branch(ref right_branch) = &**neighbor {
                 if right_branch.key_count >= min_keys {
@@ -871,13 +953,18 @@ where
         // if possible, execute the rotation itself
         if let Some(ref rotation) = response {
             match rotation {
+                // Left rotation possible
                 BPTRemoveResponse::RotateLeft(_) => {
                     let mut mut_left = Self::modify_node(mem::take(left).unwrap(), branch.txid);
+                    // Move current records further right to free space for
+                    // rotated element
                     for j in (0..(branch.key_count as usize - 1)).rev() {
                         branch.keys[j + 1] = take_mu!(&mut branch.keys[j]);
                         branch.refs[j + 2] = mem::take(&mut branch.refs[j + 1]);
                     }
                     branch.refs[1] = mem::take(&mut branch.refs[0]);
+                    // Rotate the record itself from the (now modifiable) left
+                    // neighbor
                     if let Node::Branch(ref mut left_branch) = Arc::get_mut(&mut mut_left).unwrap()
                     {
                         let take_ref =
@@ -889,6 +976,7 @@ where
                     }
                     *left = Some(mut_left);
                 }
+                // Right rotation possible
                 BPTRemoveResponse::RotateRight(_) => {
                     let mut mut_right = Self::modify_node(mem::take(right).unwrap(), branch.txid);
                     let new_key = (&**branch.refs[branch.key_count as usize - 1].as_ref().unwrap())
@@ -897,8 +985,11 @@ where
                     if let Node::Branch(ref mut right_branch) =
                         Arc::get_mut(&mut mut_right).unwrap()
                     {
+                        // Rotate the leftmost element from the right neighbor
                         branch.refs[branch.key_count as usize] =
                             mem::take(&mut right_branch.refs[0]);
+                        // Move the neighbor's records accordingly to fill
+                        // formed gap
                         right_branch.refs[0] = mem::take(&mut right_branch.refs[1]);
                         for j in 0..(right_branch.key_count as usize - 1) {
                             right_branch.keys[j] = take_mu!(&mut right_branch.keys[j + 1]);
@@ -978,6 +1069,7 @@ where
         panic!("Invalid remove case: remove was called on a branch with no neighbors given.");
     }
 
+    // (see "HOW REMOVE WORKS" above)
     fn remove_from_leaf(
         leaf: &mut Leaf<K, V>,
         key: &K,
@@ -1170,7 +1262,10 @@ where
     }
 
     /// Checks B+ tree invariants;
-    /// Returns the depth and number of elements of the subtree rooted in given node
+    /// Returns the depth and number of elements of the subtree rooted in given
+    /// node.
+    /// The `least_lim` and `most_lim` are the bounds the keys in this node may
+    /// lay in, so that the right ordering is kept.
     #[cfg(test)]
     fn check_bptree_properties(
         node: &Arc<Self>,
@@ -1184,6 +1279,8 @@ where
         let mut least_lim = least_lim;
         match &**node {
             Node::Branch(ref branch) => {
+                // Check that the branch has the right number of child nodes
+                // (no lower limit for root node)
                 if !root {
                     let min_keys = (B_PARAMETER / 2) - 1 + (B_PARAMETER % 2);
                     assert!(branch.key_count >= min_keys as u8,
@@ -1195,6 +1292,8 @@ where
                     branch.key_count,
                     B_PARAMETER - 1
                 );
+                // Recurse the check to children, summing up to total number of
+                // records
                 let mut count = 0;
                 let (d, cnt) = Self::check_bptree_properties(
                     branch.refs[0].as_ref().unwrap(),
@@ -1203,6 +1302,7 @@ where
                     false,
                 );
                 count += cnt;
+                // Check the right ordering of keys
                 for i in 0..(branch.key_count as usize) {
                     if let Some(least) = least_lim {
                         assert!(
@@ -1244,6 +1344,8 @@ where
                 (d + 1, count)
             }
             Node::Leaf(ref leaf) => {
+                // Check that the leaf has the right number of child nodes
+                // (no lower limit for root node)
                 if !root {
                     let min_keys = (B_PARAMETER / 2) + (B_PARAMETER % 2);
                     assert!(
@@ -1259,6 +1361,7 @@ where
                     leaf.key_count,
                     B_PARAMETER
                 );
+                // Check key ordering
                 for i in 0..(leaf.key_count as usize) {
                     if let Some(least) = least_lim {
                         assert!(
@@ -1295,12 +1398,15 @@ mod test {
 
     #[test]
     fn update_basic() {
+        // A simple test that tests if updates do what we expect
         let map = KVMap::new();
         let mut write = map.write();
         write.update(65, 65);
         write.update(2, 2);
         write.update(1000, 1000);
         write.check_bptree_properties(3);
+        // Check that a read snapshot doesn't have the data before it is
+        // committed.
         let mut read = map.read();
         assert!(read.search(&2).is_none());
         assert!(read.search(&65).is_none());
@@ -1312,11 +1418,13 @@ mod test {
         for i in 5..120 {
             write.update(i, i * 4);
         }
+        // State after first commit
         read = map.read();
         write.check_bptree_properties(117);
         read.check_bptree_properties(3);
 
         write.commit();
+        // State after the second commit
         read = map.read();
         read.check_bptree_properties(117);
         assert_eq!(2, *read.search(&2).unwrap());
@@ -1326,9 +1434,11 @@ mod test {
         }
     }
 
+    // Checks that a record for a key is what we expect
     macro_rules! check_record {
         ($record:expr, $expected:expr, $iter:expr) => {
             match $expected {
+                // Expecting no record, assert there realy is none
                 0 => assert_eq!(
                     $record,
                     None,
@@ -1336,11 +1446,14 @@ mod test {
                     $iter,
                     $record.unwrap()
                 ),
+                // Expected key "e"
                 e => match $record {
+                    // No record at all
                     None => panic!(
                         "Key {} has been inserted, but no record for it was received",
                         $iter
                     ),
+                    // Check it is indeed the right key-value pair
                     Some(rec) => assert_eq!(
                         *rec,
                         ($iter as u32, e),
@@ -1357,12 +1470,15 @@ mod test {
 
     #[test]
     fn update_random() {
+        // Randomized test of the behavior for updates only.
         let mut rng = thread_rng();
         let map = KVMap::new();
         let mut write;
         let mut count = 0;
+        // We keep this record of what keys should currently be present
         let mut member = [0; 1000];
         for _ in 0..30 {
+            // Write randomized records to the tree
             write = map.write();
             for i in 1..31 {
                 let key = rng.gen_range(0, 1000);
@@ -1374,6 +1490,7 @@ mod test {
                 write.check_bptree_properties(count);
             }
             write.commit();
+            // Check there are exactly the inserted records
             let read = map.read();
             for i in 0..1000 {
                 let record = read.search(&(i as u32));
@@ -1385,6 +1502,7 @@ mod test {
 
     #[test]
     fn remove_basic() {
+        // A simple test of the remove method's functionality
         let map = KVMap::new();
         let mut write = map.write();
         write.update(1, 4);
@@ -1394,6 +1512,7 @@ mod test {
         assert!(map.read().search(&1).is_none());
         assert_eq!(4, *write.search(&1).unwrap());
         assert_eq!(400, *write.search(&100).unwrap());
+        // After ensuring records have been written correctly, remove some
         write.remove(&1);
         write.check_bptree_properties(2);
         write.remove(&100);
@@ -1401,16 +1520,19 @@ mod test {
         assert!(write.search(&1).is_none());
         assert!(write.search(&100).is_none());
 
+        // New record and a modification
         for i in 40..61 {
             write.update(i, i);
         }
         let mut count = 21;
 
         write.commit();
+        // Check with a read snapshot
         let mut read = map.read();
         read.check_bptree_properties(count);
         assert_eq!(50, *read.search(&50).unwrap());
 
+        // Several other removals
         write = map.write();
         let mut i = 40;
         while i < 61 {
@@ -1420,6 +1542,7 @@ mod test {
             write.check_bptree_properties(count);
         }
         write.commit();
+        // Again, ensure remove performed correctly
         read = map.read();
         i = 41;
         while i < 61 {
@@ -1428,6 +1551,7 @@ mod test {
             i += 2;
         }
 
+        // Final iteration of the process
         write = map.write();
         i = 41;
         while i < 61 {
@@ -1442,12 +1566,15 @@ mod test {
 
     #[test]
     fn remove_random() {
+        // Randomized test for `remove`
         let mut rng = thread_rng();
         let map = KVMap::new();
         let mut write;
         let mut count = 0;
+        // We keep this record of what keys should currently be present
         let mut member = [0; 1000];
         for i in 0..8 {
+            // Perform randomized updates/removes with the write handle
             write = map.write();
             for j in 1..550 {
                 let key = rng.gen_range(0, 1000);
@@ -1470,6 +1597,7 @@ mod test {
                 write.check_bptree_properties(count);
             }
             write.commit();
+            // After commit, check exactly the expected records are present
             let read = map.read();
             for j in 0..1000 {
                 let record = read.search(&(j as u32));
