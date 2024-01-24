@@ -42,3 +42,8 @@ Another benchmark uses **Criterion** to measure execution times, namely the one 
 *Note that the code samples in the Rust docs (comments) in the source files aren't intended as standalone code, and therefore won't build. By default, Cargo tests the validity of the code in the docs, which is not desirable for us. If you wish to run the tests for this library, run with `cargo test --lib`.*
 
 *The benchmarks in this directory are intended to be run separately (which can be done using `cargo bench [benchmark_filename]`). Some write into our custom `.result` files, some use the `criterion` library for the evaluation of execution times.*
+
+---
+
+Licensed under [GPLv3](https://www.gnu.org/licenses/gpl-3.0.html).
+
