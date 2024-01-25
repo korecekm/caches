@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // This bench function iterates through keys in our access logs and counts how many cache misses
 // occur with the different cache replacement policies of different cache capacities.
 // 

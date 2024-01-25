@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+
+SPDX-License-Identifier: GPL-3.0-or-later
+-->
+
 # The *.result* format
 
 Our measurements that count the number of cache misses write their output into a simple special format. It is intended as input for visualization scripts, rather than to be human readable.

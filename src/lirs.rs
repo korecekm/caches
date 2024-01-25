@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // An implementation of the LIRS cache replacement policy based on
 // Jiang, Zhang: LIRS: An Efficient Low Inter-reference Recency Set Replacement Policy to Improve
 // Buffer Cache Performance

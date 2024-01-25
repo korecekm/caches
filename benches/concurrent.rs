@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // This benchmark measures the in-memory performance of our simulations of different strategies for
 // making a cache concurrent. We call these LOCK, ASSOCIATIVE, PER THREAD and TRANSACTIONAL. the
 // single_thread benchmark provides a very similar measurement of the performance of our cache data

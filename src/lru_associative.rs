@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Implementation of an associative set of LRU caches. We call the caches in the set 'slots'. We
 // attempt to divide records into uniformly large sets, and have each slot only keep records from
 // one of these sets.

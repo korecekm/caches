@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // A transactional LRU cache that gives read transactions no way of modifying the cache's content
 // (that is, even by cache hits). Write transactions store all the LRU logic in a special
 // (sequential) logic struct, which only stores information about keys and not values.

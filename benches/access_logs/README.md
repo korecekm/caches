@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+
+SPDX-License-Identifier: GPL-3.0-or-later
+-->
+
 # The *.in* and *.txn* files
 
 Our measurements use access logs located in this directory for their execution. The measurements that only count cache misses observed with different replacement policies (i.e. `hit_rate` and `cache_parameter_comparison`), need just a sequential list of the *keys* accessed. That is what the *.in* files are for. They list the logged keys line by line, and on the very first line, they state how many distinct keys appear in the list, let's call this number **N**. The keys in the logs are then simple integers from **0** to **N-1**, which is to make things simpler (for example because of our function that computes the Bélady optima) and reduce the file size compared to listing long hashes.

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // An implementation of our experimental 2Q-LFU cache.
 // 
 // This has Q1 and Q2 queues that function just like in the 2Q policy (see `qq.rs`), only that the

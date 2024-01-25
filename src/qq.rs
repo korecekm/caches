@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // An implementation of a cache data structure using the 2Q replacement policy.
 // 
 // The DS is implemented with 3 separate queues, Q1, Q2 and the main queue, which we call the LRU,
