@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+
+SPDX-License-Identifier: GPL-3.0-or-later
+-->
+
 # Caches
 
 This directory contains source files written in the Rust programming language as a part of the bachelor thesis "*A Comparison of Strategies for Database Caching*" by Martin Koreček. They provide implementations of cache replacement policies, concurrent adaptations of cache data structures, and benchmarks that attempt to evaluate them. The following sections provide essential information about the presented files. Each source file includes comments that attempt to explain its source code in particular.

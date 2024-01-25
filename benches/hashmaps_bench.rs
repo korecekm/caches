@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // This benchmark aims to see how our transactional hash map implementations fair against each
 // other.. here, we only compare sequential behavior of write transactions (with no additional read
 // transactions or concurrency whatsoever). The transactions get committed occasionally.

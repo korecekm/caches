@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Our doubly-linked list
 pub mod list;
 

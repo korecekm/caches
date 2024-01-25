@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // An implementation of the ARC cache replacement policy based on
 // Megiddo, Modha: ARC: A Self-Tuning, Low Overhead Replacement Cache
 // (https://www.usenix.org/conference/fast-03/arc-self-tuning-low-overhead-replacement-cache)

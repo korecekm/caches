@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // An implementation of the CLOCK-Pro cache replacement policy based on
 // Jiang, Chen, Zhang: CLOCK-Pro: An Effective Improvement of the Clock Replacement
 // (https://www.usenix.org/conference/2005-usenix-annual-technical-conference/clock-pro-effective-improvement-clock-replacement)

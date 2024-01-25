@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // This is an implementation of a cache data structure using the Least Recently Used (LRU)
 // replacement policy. As the name suggests, when the cache is full and a new record is being
 // inserted into it, the strategy evicts the record that has been accessed the least recently.

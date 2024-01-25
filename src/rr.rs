@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // An implementation of the random replacement cache data structure. We keep record of cached keys
 // inside a vector (`vec`). This is used when we evict records (once the cache's capacity is
 // reached and another record is being inserted). At that event, we generate an index in the `vec`

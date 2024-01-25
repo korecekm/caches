@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // LFU cache implemented with a hash map and a binary heap.
 // The heap is a standard array-based min-heap ordered by a frequency counter. Before the cache's
 // CAPACITY is reached, standard heap insertions are used for submitting new keys for caching. Once

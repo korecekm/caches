@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // This bench file is intended to reveal how different parameters given to the parameterized
 // replecament policies (2Q, 2Q-LFU and LIRS) affect their performance, and which choices of the
 // parameters work well.

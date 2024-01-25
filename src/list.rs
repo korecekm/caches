@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // An implementation of a doubly linked list, that we use in our cache
 // implementations mainly as a queue.
 //

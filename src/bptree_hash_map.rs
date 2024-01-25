@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // A transactional key-value hash map implemented simply by generating a hash for a given key and
 // using the transactional B+ tree to store it.
 //

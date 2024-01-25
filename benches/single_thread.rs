@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // This benchmark examines the in-memory performance of our implementations of cache replacement
 // policy data structures. That is, how long they take to perform several transactions.
 // 

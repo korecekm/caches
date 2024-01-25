@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // # A concurrently readable, transactional B+ tree
 // The underlying sequential data structure is the standard B+ tree. The "transactional" properties
 // described in KVMap's docs are guaranteed with the method explained in section 3.1 of

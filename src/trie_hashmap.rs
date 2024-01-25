@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // # A concurrently readable, transactional key-value map.
 // ## Sequential DS description:
 // We have an 8-ary trie, where nodes at depth D have 8 children corresponding to the possible

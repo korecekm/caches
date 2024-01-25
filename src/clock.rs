@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 2023 Martin Koreček
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // This is an implementation of the basic CLOCK replacement cache.
 // The imaginary circular linked list is implemented with an array (called clock) in which we move
 // our `insertion_idx` index. For constant-time searching for the list's elements, and also storing
